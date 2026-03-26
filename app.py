@@ -5,96 +5,76 @@ from bs4 import BeautifulSoup
 import time
 import re
 
-# 1. CONFIGURARE
-st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷")
-PASSWORD = "CodulEsteVinul"
+# CONFIGURARE (Păstrăm simplitatea Varianta 3)
+st.set_page_config(page_title="Wine Watcher", page_icon="🍷")
 
-if "password_correct" not in st.session_state:
-    st.title("🔐 Acces Privat Crama")
-    parola = st.text_input("Introdu parola:", type="password")
-    if st.button("Intră"):
-        if parola == PASSWORD:
-            st.session_state["password_correct"] = True
-            st.rerun()
-        else:
-            st.error("Parolă incorectă!")
-    st.stop()
+def clean_price(text):
+    if not text: return None
+    # Curățăm textul păstrând doar cifrele și punct/virgulă
+    digits = re.sub(r'[^\d.,]', '', text).replace(',', '.')
+    match = re.search(r"(\d+\.\d+|\d+)", digits)
+    if match:
+        val = float(match.group(1))
+        # Corecție pentru formate tip 12500 în loc de 125.00
+        if val > 5000: val /= 100
+        return round(val, 2)
+    return None
 
-# 2. MOTORUL DE CĂUTARE (Calibrat 0.75L)
-def get_price_v3(url):
-    # Folosim un browser mai "uman" pentru a evita eroarea 403/Indisponibil
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+def get_wine_price(url):
+    scraper = cloudscraper.create_scraper()
     try:
-        res = scraper.get(url, timeout=20)
-        if res.status_code != 200:
-            return None, f"Serverul a refuzat conexiunea (Cod {res.status_code})"
-            
+        res = scraper.get(url, timeout=15)
         soup = BeautifulSoup(res.content, "html.parser")
-        text_pret = ""
-
+        
         if "vinimondo.ro" in url:
-            meta = soup.find("meta", property="product:price:amount")
-            text_pret = meta["content"] if meta else ""
+            tag = soup.find("meta", property="product:price:amount")
+            return clean_price(tag["content"]) if tag else None
         
         elif "king.ro" in url:
-            # Selectorul pentru 120.74 RON
+            # ACTUALIZARE: Selectorul specific pentru King.ro (120.74 RON)
             tag = soup.find("span", {"data-price-type": "finalPrice"})
-            text_pret = tag.text if tag else ""
+            if not tag: tag = soup.select_one(".price-final_price .price")
+            return clean_price(tag.text) if tag else None
 
         elif "crushwineshop.ro" in url:
-            tag = soup.select_one("p.price ins span.woocommerce-Price-amount, p.price span.woocommerce-Price-amount")
-            text_pret = tag.text if tag else ""
+            tag = soup.select_one(".woocommerce-Price-amount bdi")
+            return clean_price(tag.text) if tag else None
 
         elif "winemag.ro" in url:
-            tag = soup.find("span", class_="price-new")
-            text_pret = tag.text if tag else ""
+            tag = soup.select_one(".price-new, .price")
+            return clean_price(tag.text) if tag else None
+            
+        return None
+    except:
+        return None
 
-        if text_pret:
-            clean_digits = text_pret.replace(',', '.').replace(' ', '')
-            numere = re.findall(r"\d+\.\d+|\d+", clean_digits)
-            if numere:
-                valoare = float(numere[0])
-                if valoare > 2000: valoare /= 100
-                return valoare, "Succes"
-                
-        return None, "Preț negăsit în pagină"
-    except Exception as e:
-        return None, "Timeout sau blocaj IP"
+# INTERFAȚĂ (Exact ca în varianta care funcționează)
+st.title("🍷 Wine Watcher: Le Volte dell'Ornellaia")
+st.write("Monitorizare prețuri pentru varianta 0.75L.")
 
-# 3. INTERFAȚĂ
-st.title("🍷 Wine Watcher: Ornellaia 0.75L")
+if st.button("🔄 Actualizează Prețurile"):
+    surse = [
+        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+        {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+        {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
+        {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"}
+    ]
 
-surse = [
-    {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
-    {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
-    {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
-    {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
-]
-
-if st.button("🚀 Verifică Prețurile Acum"):
-    rezultate = []
-    
-    # Folosim containere pentru a vedea progresul în timp real
-    status_container = st.container()
-    
+    results = []
     for s in surse:
-        with status_container:
-            with st.status(f"Se verifică {s['Magazin']}...", expanded=True) as status:
-                pret, msg = get_price_v3(s["URL"])
-                if pret:
-                    rezultate.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
-                    status.update(label=f"✅ {s['Magazin']}: {pret} RON", state="complete")
-                else:
-                    status.update(label=f"❌ {s['Magazin']}: {msg}", state="error")
-                time.sleep(3) # Pauză anti-blocaj
+        with st.spinner(f"Verificăm {s['Magazin']}..."):
+            price = get_wine_price(s["URL"])
+            if price:
+                results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Link": s["URL"]})
+            # Pauză scurtă între cereri pentru stabilitate
+            time.sleep(2)
 
-    if rezultate:
-        st.divider()
-        df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
-        st.subheader("📊 Rezultate Găsite")
+    if results:
+        df = pd.DataFrame(results).sort_values(by="Preț (RON)")
+        st.subheader("Clasament prețuri (TVA inclus):")
         st.table(df[["Magazin", "Preț (RON)"]])
         
-        for r in rezultate:
-            st.link_button(f"🛒 {r['Magazin']} - {r['Preț (RON)']} RON", r['Link'])
+        for r in results:
+            st.link_button(f"🛒 Cumpără de la {r['Magazin']} ({r['Preț (RON)']} RON)", r['Link'])
     else:
-        st.error("⚠️ Nu am putut prelua niciun preț. Cel mai probabil, adresa IP a fost blocată temporar de magazine.")
+        st.error("Nu am putut prelua prețurile. Verifică manual legătura la internet.")
