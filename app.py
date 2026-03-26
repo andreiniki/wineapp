@@ -4,78 +4,92 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
+from googlesearch import search
 
-# CONFIGURARE
-st.set_page_config(page_title="Wine Watcher", page_icon="🍷")
+# 1. CONFIGURARE
+st.set_page_config(page_title="Wine Watcher Universal", page_icon="🍷")
+PASSWORD = "CodulEsteVinul"
 
-def clean_price(text):
-    if not text: return None
-    # Păstrăm doar cifrele și punctul/virgula
-    digits = re.sub(r'[^\d.,]', '', text).replace(',', '.')
-    match = re.search(r"(\d+\.\d+|\d+)", digits)
-    if match:
-        val = float(match.group(1))
-        # Corecție pentru formate de tipul 12500
-        if val > 5000: val /= 100
-        return round(val, 2)
-    return None
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.title("🔐 Acces Privat Crama")
+        parola = st.text_input("Introdu parola:", type="password")
+        if st.button("Intră"):
+            if parola == PASSWORD:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Parolă incorectă!")
+        return False
+    return True
 
-def get_wine_price(url):
-    scraper = cloudscraper.create_scraper()
+# 2. MOTORUL DE EXTRARE (Logica ta îmbunătățită)
+def get_price_flexible(url):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
         res = scraper.get(url, timeout=15)
+        if res.status_code != 200: return None
+        
         soup = BeautifulSoup(res.content, "html.parser")
         
-        if "vinimondo.ro" in url:
-            # Metoda care a dat 125 RON
-            tag = soup.find("meta", property="product:price:amount")
-            return clean_price(tag["content"]) if tag else None
-        
-        elif "king.ro" in url:
-            # Calibrare pentru 120.74 RON
-            tag = soup.find("span", {"data-price-type": "finalPrice"})
-            if not tag: tag = soup.select_one(".price-final_price .price")
-            return clean_price(tag.text) if tag else None
+        # Încercăm întâi meta-tag-urile standard (comune la magazinele mari)
+        meta = soup.find("meta", property="product:price:amount")
+        if meta:
+            return float(meta["content"].replace(',', '.'))
 
-        elif "crushwineshop.ro" in url:
-            tag = soup.select_one(".woocommerce-Price-amount bdi")
-            return clean_price(tag.text) if tag else None
-
-        elif "winemag.ro" in url:
-            tag = soup.select_one(".price-new, .price")
-            return clean_price(tag.text) if tag else None
+        # Strategia de urgență: Căutăm tiparul de preț în textul paginii
+        page_text = soup.get_text()
+        # Regex pentru prețuri tip 120,74 sau 125.00 urmate de lei/ron
+        match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+        if match:
+            val = float(match.group(1).replace(',', '.'))
+            if val > 2000: val /= 100
+            return val
             
         return None
     except:
         return None
 
-# INTERFAȚĂ ORIGINALĂ
-st.title("🍷 Wine Watcher: Le Volte dell'Ornellaia")
-st.write("Apasă butonul de mai jos pentru a verifica prețurile actuale (0.75L).")
-
-if st.button("🔄 Actualizează Prețurile"):
-    surse = [
-        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
-        {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
-        {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
-        {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"}
-    ]
-
-    results = []
-    for s in surse:
-        with st.spinner(f"Verificăm {s['Magazin']}..."):
-            price = get_wine_price(s["URL"])
-            if price:
-                results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Link": s["URL"]})
-            # Pauză esențială pentru a evita blocajele detectate anterior
-            time.sleep(2)
-
-    if results:
-        df = pd.DataFrame(results).sort_values(by="Preț (RON)")
-        st.subheader("Clasament prețuri:")
-        st.dataframe(df[["Magazin", "Preț (RON)"]], use_container_width=True)
+# 3. INTERFAȚA
+if check_password():
+    st.title("🍷 Wine Watcher: Căutare Națională")
+    produs_cautat = st.text_input("Produs de căutat:", value="Le Volte dell'Ornellaia 0.75L")
+    
+    if st.button("🚀 Scanează tot internetul (RO)"):
+        rezultate = []
+        # Căutăm pe Google primele 10-15 rezultate din magazine românești
+        query = f'"{produs_cautat}" site:.ro store OR pret OR cumpara'
         
-        for r in results:
-            st.link_button(f"🛒 Cumpără de la {r['Magazin']} ({r['Preț (RON)']} RON)", r['Link'])
-    else:
-        st.error("Nu am putut prelua prețurile. Site-urile pot fi temporar indisponibile.")
+        with st.status("Google indexează magazinele...", expanded=True) as status:
+            # Preluăm link-urile de la Google
+            links = [j for j in search(query, num=15, stop=15, pause=2)]
+            
+            for i, link in enumerate(links):
+                # Filtrăm site-urile care nu sunt magazine (ex: bloguri, stiri)
+                if any(x in link for x in ["stiri", "forum", "facebook", "youtube", "emag"]): # eMag e greu de scanat direct
+                    continue
+                
+                status.write(f"Analizăm magazinul: {link.split('/')[2]}...")
+                pret = get_price_flexible(link)
+                
+                if pret and 80 < pret < 300: # Filtru de siguranță pentru 0.75L
+                    nume_magazin = link.split('/')[2].replace('www.', '')
+                    rezultate.append({"Magazin": nume_magazin, "Preț (RON)": pret, "Link": link})
+                
+                time.sleep(1) # Evităm blocajele
+            
+            status.update(label="Căutare finalizată!", state="complete")
+
+        if rezultate:
+            df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
+            st.balloons()
+            st.metric("Cea mai bună ofertă găsită", f"{df.iloc[0]['Preț (RON)']} RON")
+            st.table(df[["Magazin", "Preț (RON)"]])
+            
+            for _, row in df.iterrows():
+                st.link_button(f"🛒 Mergi la {row['Magazin']}", row['Link'])
+        else:
+            st.warning("Nu am găsit prețuri valide. Reîncearcă sau verifică termenii de căutare.")
+
+    st.divider()
+    st.caption("Acest mod folosește Google pentru a descoperi noi magazine automat.")
