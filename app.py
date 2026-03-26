@@ -4,16 +4,14 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
-import random
-from datetime import datetime
 
 # 1. CONFIGURARE & SECURITATE
-st.set_page_config(page_title="Wine Watcher", page_icon="🍷")
+st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷")
 PASSWORD = "CodulEsteVinul"
 
 def check_password():
     if "password_correct" not in st.session_state:
-        st.title("🔐 Acces Privat")
+        st.title("🔐 Acces Privat Crama")
         parola = st.text_input("Introdu parola:", type="password")
         if st.button("Intră"):
             if parola == PASSWORD:
@@ -24,63 +22,62 @@ def check_password():
         return False
     return True
 
-def clean_price(text):
-    if not text: return None
-    digits = re.sub(r'[^\d.,]', '', text).replace(',', '.')
-    match = re.search(r"(\d+\.\d+|\d+)", digits)
-    if match:
-        val = float(match.group(1))
-        if val > 5000: val /= 100
-        return round(val, 2)
-    return None
-
-# 2. MOTORUL DE CĂUTARE "NINJA"
-def get_final_price_v11(url):
-    # Schimbăm identitatea la fiecare cerere
-    agents = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/121.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Linux x86_64) Chrome/122.0.0.0 Safari/537.36'
-    ]
-    
-    scraper = cloudscraper.create_scraper()
-    headers = {
-        'User-Agent': random.choice(agents),
-        'Accept': 'text/html,application/xhtml+xml,xml;q=0.9,image/avif,webp,*/*;q=0.8',
-        'Referer': 'https://www.google.com/'
-    }
-    
+# 2. MOTORUL DE SCRAPING - DETECȚIE FLEXIBILĂ
+def get_price_v3(url):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
-        res = scraper.get(url, headers=headers, timeout=25)
-        if res.status_code != 200: return None
-        
+        res = scraper.get(url, timeout=20)
+        if res.status_code != 200:
+            return None, f"Eroare Server ({res.status_code})"
+            
         soup = BeautifulSoup(res.content, "html.parser")
-        
+        text_pret = ""
+
+        # Strategie pe site-uri
         if "vinimondo.ro" in url:
-            tag = soup.find("meta", property="product:price:amount")
-            return clean_price(tag["content"]) if tag else None
+            # Căutăm în meta tag-uri (cele mai sigure)
+            meta = soup.find("meta", property="product:price:amount")
+            text_pret = meta["content"] if meta else ""
         
         elif "king.ro" in url:
-            tag = soup.select_one('span[data-price-type="finalPrice"] .price')
-            return clean_price(tag.text) if tag else None
+            # King folosește atribute de date
+            tag = soup.find("span", {"data-price-type": "finalPrice"})
+            text_pret = tag.text if tag else ""
 
         elif "crushwineshop.ro" in url:
-            tag = soup.select_one(".woocommerce-Price-amount bdi, .amount")
-            return clean_price(tag.text) if tag else None
+            # Crush are prețul într-un tag bdi sau span
+            tag = soup.select_one("p.price ins span.woocommerce-Price-amount, p.price span.woocommerce-Price-amount")
+            text_pret = tag.text if tag else ""
 
         elif "winemag.ro" in url:
-            tag = soup.select_one(".price-new, .price")
-            return clean_price(tag.text) if tag else None
+            tag = soup.find("span", class_="price-new")
+            text_pret = tag.text if tag else ""
 
-        return None
-    except:
-        return None
+        # Dacă nu am găsit prin metodele de mai sus, căutăm orice număr mare urmat de "lei"
+        if not text_pret:
+            page_text = soup.get_text()
+            match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+            if match:
+                text_pret = match.group(1)
 
-# 3. INTERFAȚĂ
+        if text_pret:
+            # Curățare: păstrăm doar cifrele și transformăm virgula în punct
+            clean_digits = text_pret.replace(',', '.').replace(' ', '')
+            numere = re.findall(r"[-+]?\d*\.\d+|\d+", clean_digits)
+            if numere:
+                valoare = float(numere[0])
+                # Corecție pentru formatări ciudate (ex: 12500 în loc de 125)
+                if valoare > 2000: valoare = valoare / 100
+                return valoare, "Succes"
+                
+        return None, "Nu am putut citi prețul din pagină"
+    except Exception as e:
+        return None, f"Eroare tehnică: {str(e)[:50]}"
+
+# 3. INTERFAȚA
 if check_password():
-    st.title("🍷 Wine Watcher: Monitorizare Prețuri")
-    st.warning("⚠️ Notă: Verificarea durează aproximativ 30 de secunde pentru a evita blocarea de către magazine.")
-
+    st.title("🍷 Wine Watcher: Ornellaia")
+    
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
         {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
@@ -88,32 +85,40 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🚀 Scanează Magazinele"):
-        results = []
-        now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-        progress_bar = st.progress(0)
+    if st.button("🔄 Verifică Toate Prețurile"):
+        rezultate = []
+        erori = []
+        bara = st.progress(0)
         
         for i, s in enumerate(surse):
-            with st.status(f"Se caută la {s['Magazin']}...", expanded=False) as status:
-                price = get_final_price_v11(s["URL"])
-                if price:
-                    results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Verificat la": now, "Link": s["URL"]})
-                    status.update(label=f"✅ {s['Magazin']}: {price} RON", state="complete")
+            with st.spinner(f'Analizăm {s["Magazin"]}...'):
+                pret, msg = get_price_v3(s["URL"])
+                if pret:
+                    rezultate.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
                 else:
-                    status.update(label=f"❌ {s['Magazin']}: Indisponibil acum", state="error")
-                
-                # Pauză random pentru a părea uman
-                time.sleep(random.uniform(4.5, 7.5))
-                progress_bar.progress((i + 1) / len(surse))
-
-        if results:
+                    erori.append(f"{s['Magazin']}: {msg}")
+                time.sleep(2) # Pauză mai lungă pentru a fi "invizibili"
+            bara.progress((i + 1) / len(surse))
+        
+        if rezultate:
+            df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
             st.balloons()
-            df = pd.DataFrame(results).sort_values(by="Preț (RON)")
-            st.subheader("📊 Tabel Prețuri Finale (TVA inclus)")
-            st.dataframe(df[["Magazin", "Preț (RON)", "Verificat la"]], use_container_width=True, hide_index=True)
             
-            cols = st.columns(len(results))
-            for idx, row in df.iterrows():
-                cols[idx % len(results)].link_button(f"🛒 {row['Magazin']}", row['Link'])
-        else:
-            st.error("❌ Toate încercările au eșuat. Așteaptă 10 minute pentru resetarea IP-ului.")
+            # Metrică principală
+            st.metric("Cea mai bună ofertă", f"{df.iloc[0]['Preț (RON)']} RON", f"la {df.iloc[0]['Magazin']}")
+            
+            # Afișare tabel curat
+            st.write("### Clasament prețuri:")
+            st.table(df[["Magazin", "Preț (RON)"]])
+            
+            # Butoane de cumpărare
+            for _, row in df.iterrows():
+                st.link_button(f"🛒 Cumpără de la {row['Magazin']} ({row['Preț (RON)']} RON)", row['Link'])
+        
+        if erori:
+            with st.expander("⚠️ Detalii despre magazinele care nu au răspuns"):
+                for e in erori:
+                    st.write(e)
+                    
+    st.divider()
+    st.caption("Notă: Dacă un preț nu apare, reîncearcă peste 1 minut. Site-urile protejate pot bloca cereri repetate.")
