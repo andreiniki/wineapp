@@ -56,25 +56,30 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🔄 Actualizează Prețurile"):
+  if st.button("🔄 Actualizează Prețurile"):
         data = []
-        with st.spinner('Se verifică ofertele...'):
+        with st.spinner('Se verifică ofertele pe site-uri...'):
             for s in surse:
                 pret = get_price(s["URL"], s["Magazin"])
-                data.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
+                if pret is not None:  # Adăugăm în listă doar dacă am reușit să citim prețul
+                    data.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
         
-        df = pd.DataFrame(data)
-        df = df.sort_values(by="Preț (RON)", ascending=True)
+        if data: # Verificăm dacă avem cel puțin un preț găsit
+            df = pd.DataFrame(data)
+            df = df.sort_values(by="Preț (RON)", ascending=True)
 
-        # Afișare Best Deal
-        min_price = df["Preț (RON)"].min()
-        best_shop = df[df["Preț (RON)"] == min_price]["Magazin"].values[0]
-        
-        st.metric(label="Cel mai bun preț azi", value=f"{min_price} RON", delta=f"la {best_shop}")
+            # Afișare Best Deal
+            min_price = df["Preț (RON)"].min()
+            best_shop = df[df["Preț (RON)"] == min_price]["Magazin"].values[0]
+            
+            st.metric(label="Cel mai bun preț azi", value=f"{min_price} RON", delta=f"la {best_shop}")
 
-        # Tabel formatat
-        st.write("### Comparație prețuri:")
-        st.dataframe(df, use_container_width=True)
-        
-        for index, row in df.iterrows():
-            st.link_button(f"Cumpără de la {row['Magazin']} - {row['Preț (RON)']} RON", row['Link'])
+            st.write("### Comparație prețuri:")
+            st.dataframe(df, use_container_width=True)
+            
+            for index, row in df.iterrows():
+                st.link_button(f"Cumpără de la {row['Magazin']} - {row['Preț (RON)']} RON", row['Link'])
+        else:
+            # Mesaj prietenos în caz că suntem blocați
+            st.error("⚠️ Hopa! Nu am putut prelua prețurile de pe niciun site.")
+            st.warning("Site-urile de vinuri au detectat vizita noastră automată și ne-au blocat temporar accesul. Încearcă din nou peste câteva minute.")
