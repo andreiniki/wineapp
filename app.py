@@ -5,22 +5,20 @@ from bs4 import BeautifulSoup
 import time
 import re
 
-st.set_page_config(page_title="Le Volte Price Tracker", page_icon="🍷")
+st.set_page_config(page_title="Wine Watcher Premium", page_icon="🍷")
 
 def clean_price(text):
     if not text: return None
-    # Curățare agresivă pentru a extrage doar cifrele
     text = text.lower().replace('lei', '').replace('ron', '').strip()
     text = text.replace(',', '.')
     match = re.search(r"(\d+\.\d+|\d+)", text)
     if match:
         val = float(match.group(1))
-        # Corecție pentru formatele de tip 12500 (fără separator)
         if val > 1000: val /= 100
         return round(val, 2)
     return None
 
-def get_wine_price(url):
+def get_wine_price(url, min_p, max_p):
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
     )
@@ -29,64 +27,86 @@ def get_wine_price(url):
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # 1. Verificăm Meta Tags (metoda cea mai stabilă)
+        # Metoda 1: Meta Tags
         meta = soup.find("meta", property="product:price:amount")
-        if meta: return clean_price(meta["content"])
+        if meta: 
+            p = clean_price(meta["content"])
+            if p and min_p < p < max_p: return p
 
-        # 2. Selectori specifici pentru site-uri cu structură aparte
+        # Metoda 2: Selectori King.ro
         if "king.ro" in url:
             tag = soup.find("span", {"data-price-type": "finalPrice"})
             if tag: return clean_price(tag.text)
         
-        # 3. Căutare generală (pentru site-urile noi adăugate)
+        # Metoda 3: Căutare generală
         price_tags = soup.find_all(class_=re.compile("price", re.I))
         for tag in price_tags:
             val = clean_price(tag.text)
-            if val and 90 < val < 400: # Filtru de siguranță pentru 0.75L
+            if val and min_p < val < max_p:
                 return val
         return None
     except:
         return None
 
-# INTERFAȚĂ
-st.title("🍷 Monitorizare: LE VOLTE")
-st.markdown("Am inclus toate variantele de denumire găsite (*Le Volte*, *Ornellaia Le Volte*, *Le Volte dell Ornellaia*).")
+# --- CONFIGURARE SURSE ---
+BAZA_DATE_VINURI = {
+    "Le Volte dell'Ornellaia": {
+        "min_price": 90,
+        "max_price": 300,
+        "surse": [
+            {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"},
+            {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+            {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+            {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
+            {"Magazin": "Alcool Scont", "URL": "https://www.alcoolscont.ro/vinuri/vin-rosu-le-volte-dell-ornellaia-0-75l.html"},
+            {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rosu-sec-le-volte-dell-ornellaia-0-75l"}
+        ]
+    },
+    "Rosa dei Frati (Ca' dei Frati)": {
+        "min_price": 60,
+        "max_price": 150,
+        "surse": [
+            {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ca-dei-frati-rosa-dei-frati-075l"},
+            {"Magazin": "King.ro", "URL": "https://king.ro/ca-dei-frati-rosa-dei-frati-0.750-l.html"},
+            {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/ca-dei-frati-rosa-dei-frati-riviera-del-garda-classico-doc-ca-dei-frati-ro"},
+            {"Magazin": "WineMag", "URL": "https://www.winemag.ro/ca-dei-frati-rosa-dei-frati-0-75l"},
+            {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rose-sec-ca-dei-frati-rosa-dei-frati-0-75l"},
+            {"Magazin": "Alcool Scont", "URL": "https://www.alcoolscont.ro/vinuri/vin-rose-ca-dei-frati-rosa-dei-frati-0-75l.html"},
+            {"Magazin": "Wine360", "URL": "https://wine360.ro/ca-dei-frati-rosa-dei-frati-riviera-del-garda-classico"},
+            {"Magazin": "Nobil Wine", "URL": "https://nobilwine.ro/magazin/vinuri/vinuri-roze/ca-dei-frati-rosa-dei-frati-roze/"}
+        ]
+    }
+}
 
-if st.button("🚀 Scanează Ofertele"):
-    # LISTA EXTINSĂ BAZATĂ PE CĂUTAREA DUPĂ "LE VOLTE"
-    surse = [
-        {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"},
-        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
-        {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
-        {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
-        {"Magazin": "E-Bauturi", "URL": "https://www.e-bauturi.ro/cumpara/vin-rosu-ornellaia-le-volte-dell-ornellaia-0-75l-8447"},
-        {"Magazin": "Alcool Scont", "URL": "https://www.alcoolscont.ro/vinuri/vin-rosu-le-volte-dell-ornellaia-0-75l.html"},
-        {"Magazin": "Winesday", "URL": "https://shop.winesday.ro/vinuri-rosii/1149-le-volte-dell-ornellaia-toscana-igt-2021-ornellaia.html"},
-        {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rosu-sec-le-volte-dell-ornellaia-0-75l"},
-        {"Magazin": "Wine360", "URL": "https://wine360.ro/le-volte-dell-ornellaia-toscana-igt-rosso"},
-        {"Magazin": "Nobil Wine", "URL": "https://nobilwine.ro/magazin/vinuri/vinuri-rosii/ornellaia-le-volte-dellornellaia/"},
-        {"Magazin": "Despre Vin", "URL": "https://desprevin.ro/vinuri/le-volte-dell-ornellaia-2021-igp-toscana-rosso/"}
-    ]
+# --- INTERFAȚĂ ---
+st.title("🍷 Wine Watcher: Monitorizare Prețuri")
+vin_ales = st.selectbox("Alege vinul pe care vrei să-l verifici:", list(BAZA_DATE_VINURI.keys()))
 
+if st.button(f"🔍 Verifică prețuri pentru {vin_ales}"):
+    config = BAZA_DATE_VINURI[vin_ales]
     results = []
-    progress_bar = st.progress(0)
     
-    for i, s in enumerate(surse):
-        with st.spinner(f"Căutăm la {s['Magazin']}..."):
-            price = get_wine_price(s["URL"])
-            if price:
-                results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Link": s["URL"]})
-            # O mică pauză pentru a nu declanșa sistemele anti-bot
-            time.sleep(1.2)
-        progress_bar.progress((i + 1) / len(surse))
+    progress_bar = st.progress(0)
+    status_msg = st.empty()
+    
+    for i, s in enumerate(config["surse"]):
+        status_msg.text(f"Se verifică {s['Magazin']}...")
+        pret = get_wine_price(s["URL"], config["min_price"], config["max_price"])
+        
+        if pret:
+            results.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
+        
+        progress_bar.progress((i + 1) / len(config["surse"]))
+        time.sleep(1.2)
+
+    status_msg.empty()
 
     if results:
         df = pd.DataFrame(results).sort_values(by="Preț (RON)")
-        st.balloons()
-        st.subheader("📊 Cele mai bune prețuri pentru LE VOLTE:")
+        st.success(f"Am găsit {len(results)} oferte pentru {vin_ales}!")
         st.table(df[["Magazin", "Preț (RON)"]])
         
         for r in results:
-            st.link_button(f"🛒 Cumpără de la {r['Magazin']} - {r['Preț (RON)']} RON", r['Link'])
+            st.link_button(f"🛒 {r['Magazin']}: {r['Preț (RON)']} RON", r['Link'])
     else:
-        st.error("Nu am putut găsi prețuri în acest moment. Verifică link-urile.")
+        st.error("Nu am găsit nicio ofertă validă. Verifică link-urile manual.")
