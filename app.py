@@ -5,96 +5,98 @@ from bs4 import BeautifulSoup
 import time
 import re
 
-st.set_page_config(page_title="Wine Watcher", page_icon="🍷")
+st.set_page_config(page_title="Wine Watcher: Le Volte", page_icon="🍷")
 
 def clean_price(text):
     if not text: return None
-    # Eliminăm "lei", "ron", spațiile și alte caractere, păstrăm doar cifre, punct și virgulă
+    # Curățăm textul de simboluri și litere
     text = text.lower().replace('lei', '').replace('ron', '').strip()
-    # Înlocuim virgula cu punct pentru formatul zecimal
     text = text.replace(',', '.')
-    # Extragem doar grupul de cifre (ex: din "125.00 lei" extragem "125.00")
+    # Extragem prima secvență de cifre care arată a preț
     match = re.search(r"(\d+\.\d+|\d+)", text)
     if match:
         val = float(match.group(1))
-        # Dacă prețul e uriaș (ex: 12500 în loc de 125.00), îl corectăm
-        if val > 1000: val /= 100
+        if val > 1000: val /= 100  # Corecție pentru formatul 12500 în loc de 125.00
         return round(val, 2)
     return None
 
 def get_wine_price(url):
-    # Creăm un scraper care imită un browser real de Windows
     scraper = cloudscraper.create_scraper(
         browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
     )
     try:
-        # Adăugăm un timeout mai mare și headers de browser
-        res = scraper.get(url, timeout=20)
+        res = scraper.get(url, timeout=15)
         if res.status_code != 200: return None
-        
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # Încercăm mai multe metode de a găsi prețul, de la cea mai sigură la cea mai generală
-        
-        # 1. Metoda Meta (Standard pentru majoritatea magazinelor)
-        meta_price = soup.find("meta", property="product:price:amount")
-        if meta_price: 
-            return clean_price(meta_price["content"])
+        # Metoda 1: Meta Tags (Cele mai sigure)
+        meta = soup.find("meta", property="product:price:amount")
+        if meta: return clean_price(meta["content"])
 
-        # 2. Specific pentru King.ro
+        # Metoda 2: Selectori specifici pentru magazine populare
         if "king.ro" in url:
             tag = soup.find("span", {"data-price-type": "finalPrice"})
             if tag: return clean_price(tag.text)
-
-        # 3. Specific pentru Vinimondo
-        if "vinimondo.ro" in url:
-            tag = soup.select_one(".price-wrapper .price")
+        
+        if "finestore.ro" in url:
+            tag = soup.select_one(".price-new") or soup.select_one(".price")
             if tag: return clean_price(tag.text)
 
-        # 4. Metoda Disperată: Căutăm orice clasă care conține cuvântul "price"
+        # Metoda 3: Căutare generală după clasa "price"
         price_tags = soup.find_all(class_=re.compile("price", re.I))
         for tag in price_tags:
             val = clean_price(tag.text)
-            if val and 80 < val < 500: # Filtru de siguranță pentru preț real
+            if val and 90 < val < 400: # Filtru de siguranță pentru 0.75L
                 return val
-
         return None
-    except Exception as e:
+    except:
         return None
 
 # INTERFAȚĂ
-st.title("🍷 Monitorizare Prețuri: Le Volte")
+st.title("🍷 Scrutin: Le Volte dell'Ornellaia")
+st.info("Monitorizăm prețurile în timp real din cele mai importante magazine din RO.")
 
-if st.button("🔄 Actualizează Prețurile Acum"):
+if st.button("🚀 Scanează Toate Magazinele"):
+    # LISTA TA DE SURSE ACTUALIZATĂ
     surse = [
-        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+        {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"},
         {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
-        {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"}
+        {"Magazin": "E-Bauturi", "URL": "https://www.e-bauturi.ro/cumpara/vin-rosu-ornellaia-le-volte-dell-ornellaia-0-75l-8447"},
+        {"Magazin": "Nobil Wine", "URL": "https://nobilwine.ro/magazin/vinuri/vinuri-rosii/ornellaia-le-volte-dellornellaia/"},
+        {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
+        {"Magazin": "ProduseItaliene", "URL": "https://www.produseitaliene.ro/vinuri-italiene/vinuri-rosii/le-volte-dell-ornellaia-igt-toscana-750-ml-2022"}
     ]
 
     results = []
-    status_text = st.empty()
-    progress_bar = st.progress(0)
+    status = st.empty()
+    progress = st.progress(0)
     
     for i, s in enumerate(surse):
-        status_text.text(f"Se verifică {s['Magazin']}...")
+        status.text(f"🔎 Analizăm oferta de la {s['Magazin']}...")
         price = get_wine_price(s["URL"])
         if price:
-            results.append({"Magazin": s["Magazin"], "Preț": f"{price} RON", "val": price, "Link": s["URL"]})
+            results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Link": s["URL"]})
         
-        progress_bar.progress((i + 1) / len(surse))
-        time.sleep(1) # O mică pauză să nu fim agresivi
+        progress.progress((i + 1) / len(surse))
+        time.sleep(1.2) # Pauză scurtă pentru a evita blocajele de tip "429 Too Many Requests"
 
-    status_text.empty()
+    status.empty()
 
     if results:
-        # Sortăm după valoarea numerică a prețului
-        df = pd.DataFrame(results).sort_values(by="val")
-        st.success("Prețuri actualizate cu succes!")
-        st.table(df[["Magazin", "Preț"]])
+        df = pd.DataFrame(results).sort_values(by="Preț (RON)")
+        st.balloons()
+        st.subheader("📊 Rezultate Găsite:")
         
-        for r in results:
-            st.link_button(f"🛒 Mergi la {r['Magazin']}", r['Link'])
+        # Tabel curat
+        st.dataframe(df[["Magazin", "Preț (RON)"]], use_container_width=True, hide_index=True)
+        
+        # Butoane de acces rapid
+        st.write("---")
+        cols = st.columns(2)
+        for idx, row in df.iterrows():
+            with cols[idx % 2]:
+                st.link_button(f"🛒 {row['Magazin']}: {row['Preț (RON)']} RON", row['Link'])
     else:
-        st.error("Niciun preț nu a putut fi extras. Verifică dacă link-urile mai sunt valabile.")
+        st.error("Nu am putut prelua prețurile. Verificați conexiunea la internet sau link-urile.")
