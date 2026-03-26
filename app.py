@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import cloudscraper
 from bs4 import BeautifulSoup
+import json
 import time
 import re
 
@@ -22,62 +23,60 @@ def check_password():
         return False
     return True
 
-def extract_clean_price(text):
-    if not text: return None
-    # Păstrăm doar cifrele, virgula și punctul
-    clean = re.sub(r'[^\d.,]', '', text).replace(',', '.')
-    # Căutăm prima secvență de cifre care poate avea un punct în ea
-    match = re.search(r"(\d+\.\d+|\d+)", clean)
-    if match:
-        val = float(match.group(1))
-        # Dacă numărul e prea mare (ex: 12500 în loc de 125.00), îl corectăm
-        if val > 5000: val /= 100
-        return round(val, 2)
-    return None
-
-# 2. MOTORUL DE CĂUTARE
-def get_wine_data_v7(url):
+# 2. MOTORUL DE EXTRACȚIE JSON (MULT MAI STABIL)
+def get_wine_data_v8(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
-        res = scraper.get(url, timeout=20)
+        res = scraper.get(url, timeout=25)
+        if res.status_code != 200:
+            return None, None, f"Blocat de site (Cod {res.status_code})"
+            
         soup = BeautifulSoup(res.content, "html.parser")
         p_cu_tva = None
-        p_fara_tva = None
-
-        if "vinimondo.ro" in url:
-            tag = soup.find("meta", property="product:price:amount")
-            if tag: p_cu_tva = extract_clean_price(tag["content"])
         
-        elif "king.ro" in url:
-            # Selectori multipli pentru King.ro (sunt foarte dinamici)
-            final = soup.select_one('span[data-price-type="finalPrice"] .price, .price-final_price .price')
-            base = soup.select_one('span[data-price-type="basePrice"] .price, .price-excluding-tax .price')
-            if final: p_cu_tva = extract_clean_price(final.text)
-            if base: p_fara_tva = extract_clean_price(base.text)
+        # Strategie: Căutăm scripturi de tip ld+json (date structurate)
+        json_scripts = soup.find_all('script', type='application/ld+json')
+        
+        for script in json_scripts:
+            try:
+                data = json.loads(script.string)
+                # Unele site-uri pun datele într-o listă, altele direct în obiect
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    # Căutăm entitatea de tip "Product" sau "Offer"
+                    if "@type" in item and item["@type"] == "Product":
+                        if "offers" in item:
+                            offers = item["offers"]
+                            if isinstance(offers, list):
+                                p_cu_tva = float(offers[0].get("price", 0))
+                            else:
+                                p_cu_tva = float(offers.get("price", 0))
+                            break
+            except:
+                continue
 
-        elif "crushwineshop.ro" in url:
-            tag = soup.select_one(".summary .price .woocommerce-Price-amount, .price bdi, .amount")
-            if tag: p_cu_tva = extract_clean_price(tag.text)
+        # Dacă JSON-ul a eșuat, fallback pe selectori simpli
+        if not p_cu_tva or p_cu_tva == 0:
+            tag = soup.select_one('[property="product:price:amount"], .price, .price-new')
+            if tag:
+                text = tag.get("content") if tag.has_attr("content") else tag.text
+                digits = re.sub(r'[^\d.,]', '', text).replace(',', '.')
+                match = re.search(r"(\d+\.\d+|\d+)", digits)
+                if match: p_cu_tva = float(match.group(1))
 
-        elif "winemag.ro" in url:
-            tag = soup.select_one(".price-new, .price")
-            if tag: p_cu_tva = extract_clean_price(tag.text)
-
-        # CALCULE TVA (Cota 21%)
-        if p_cu_tva and not p_fara_tva:
+        if p_cu_tva and p_cu_tva > 0:
+            if p_cu_tva > 5000: p_cu_tva /= 100
             p_fara_tva = round(p_cu_tva / 1.21, 2)
-        elif p_fara_tva and not p_cu_tva:
-            p_cu_tva = round(p_fara_tva * 1.21, 2)
-
-        if p_cu_tva:
-            return p_cu_tva, p_fara_tva, "Succes"
-        return None, None, "Preț negăsit în structura paginii"
+            return round(p_cu_tva, 2), p_fara_tva, "Succes"
+            
+        return None, None, "Preț invizibil pentru robot"
     except Exception as e:
-        return None, None, f"Eroare: {str(e)[:30]}"
+        return None, None, f"Eroare: {str(e)[:25]}"
 
 # 3. INTERFAȚĂ
 if check_password():
-    st.title("🍷 Wine Watcher: Ornellaia (TVA 21%)")
+    st.title("🍷 Wine Watcher: Ornellaia")
+    st.markdown("---")
     
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
@@ -86,34 +85,38 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🚀 Scanează Magazinele"):
+    if st.button("🔍 Verifică prețurile acum"):
         results = []
         errors = []
-        bar = st.progress(0)
         
-        for i, s in enumerate(surse):
-            with st.spinner(f'Analizăm {s["Magazin"]}...'):
-                tva_da, tva_nu, msg = get_wine_data_v7(s["URL"])
-                if tva_da:
+        for s in surse:
+            with st.status(f"Se analizează {s['Magazin']}...", expanded=False) as status:
+                p_tva, p_fara, msg = get_wine_data_v8(s["URL"])
+                if p_tva:
                     results.append({
                         "Magazin": s["Magazin"],
-                        "Preț cu TVA (21%)": f"{tva_da:.2f} RON",
-                        "Preț fără TVA": f"{tva_nu:.2f} RON" if tva_nu else "N/A",
+                        "Preț cu TVA (21%)": f"{p_tva:.2f} RON",
+                        "Preț fără TVA": f"{p_fara:.2f} RON",
                         "URL": s["URL"]
                     })
+                    status.update(label=f"✅ {s['Magazin']}: Găsit!", state="complete")
                 else:
                     errors.append(f"{s['Magazin']}: {msg}")
-                time.sleep(2.5) # O pauză puțin mai mare pentru siguranță
-            bar.progress((i + 1) / len(surse))
+                    status.update(label=f"❌ {s['Magazin']}: Eșuat", state="error")
+                time.sleep(3) # Pauză strategică
 
         if results:
             st.balloons()
             df = pd.DataFrame(results)
+            st.subheader("📊 Rezultate Găsite")
             st.table(df[["Magazin", "Preț cu TVA (21%)", "Preț fără TVA"]])
             
-            for r in results:
-                st.link_button(f"Mergi la {r['Magazin']}", r['URL'])
+            cols = st.columns(len(results))
+            for idx, r in enumerate(results):
+                cols[idx].link_button(f"🛒 {r['Magazin']}", r['URL'])
         
         if errors:
-            with st.expander("🔍 Detalii erori / Debug"):
+            with st.expander("📝 Jurnal de scanare (Erori)"):
                 for e in errors: st.write(e)
+
+    st.info("💡 Sfat: Dacă toate site-urile dau 'Eșuat', înseamnă că serverul a fost blocat temporar. Încearcă din nou peste 10 minute.")
