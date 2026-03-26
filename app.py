@@ -104,4 +104,9 @@ if check_password():
             st.balloons()
             df = pd.DataFrame(results).sort_values(by="Preț (RON)")
             st.subheader("📊 Rezultate Actualizate")
-            st.dataframe(df[["Magazin", "Preț (RON
+            st.dataframe(df[["Magazin", "Preț (RON)", "Ultima Verificare"]], use_container_width=True, hide_index=True)
+            
+            for _, row in df.iterrows():
+                st.link_button(f"🛒 {row['Magazin']} - {row['Preț (RON)']} RON", row['Link'])
+        else:
+            st.error("⚠️ Blocaj temporar. Site-urile au refuzat conexiunea. Așteaptă 5 minute și încearcă din nou.")
