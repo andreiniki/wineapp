@@ -22,7 +22,7 @@ def check_password():
         return False
     return True
 
-# 2. MOTORUL DE SCRAPING - DETECȚIE FLEXIBILĂ
+# 2. MOTORUL DE SCRAPING - CALIBRAT PENTRU 0.75L
 def get_price_v3(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
@@ -31,21 +31,26 @@ def get_price_v3(url):
             return None, f"Eroare Server ({res.status_code})"
             
         soup = BeautifulSoup(res.content, "html.parser")
+        page_text = soup.get_text().lower()
+        
+        # Validare 0.75L: Dacă pagina menționează Magnum sau 1.5L dominant, dăm avertisment
+        is_magnum = "1.5l" in page_text or "magnum" in page_text
+        is_standard = "0.75" in page_text or "750ml" in page_text or "75cl" in page_text
+
         text_pret = ""
 
-        # Strategie pe site-uri
+        # Strategie specifică pe site-uri
         if "vinimondo.ro" in url:
-            # Căutăm în meta tag-uri (cele mai sigure)
             meta = soup.find("meta", property="product:price:amount")
             text_pret = meta["content"] if meta else ""
         
         elif "king.ro" in url:
-            # King folosește atribute de date
+            # Calibrare pentru 120.74 RON
             tag = soup.find("span", {"data-price-type": "finalPrice"})
-            text_pret = tag.text if tag else ""
+            if tag:
+                text_pret = tag.text
 
         elif "crushwineshop.ro" in url:
-            # Crush are prețul într-un tag bdi sau span
             tag = soup.select_one("p.price ins span.woocommerce-Price-amount, p.price span.woocommerce-Price-amount")
             text_pret = tag.text if tag else ""
 
@@ -53,31 +58,34 @@ def get_price_v3(url):
             tag = soup.find("span", class_="price-new")
             text_pret = tag.text if tag else ""
 
-        # Dacă nu am găsit prin metodele de mai sus, căutăm orice număr mare urmat de "lei"
+        # Fallback dacă nu a găsit prin selectori
         if not text_pret:
-            page_text = soup.get_text()
-            match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+            match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', soup.get_text(), re.IGNORECASE)
             if match:
                 text_pret = match.group(1)
 
         if text_pret:
-            # Curățare: păstrăm doar cifrele și transformăm virgula în punct
             clean_digits = text_pret.replace(',', '.').replace(' ', '')
             numere = re.findall(r"[-+]?\d*\.\d+|\d+", clean_digits)
             if numere:
                 valoare = float(numere[0])
-                # Corecție pentru formatări ciudate (ex: 12500 în loc de 125)
                 if valoare > 2000: valoare = valoare / 100
+                
+                # Filtru de siguranță: Un 0.75L rar costă peste 250 RON sau sub 80 RON
+                if is_magnum and not is_standard and valoare > 220:
+                    return None, "Detectată variantă Magnum (1.5L)"
+                
                 return valoare, "Succes"
                 
-        return None, "Nu am putut citi prețul din pagină"
+        return None, "Nu am putut citi prețul"
     except Exception as e:
-        return None, f"Eroare tehnică: {str(e)[:50]}"
+        return None, f"Eroare tehnică: {str(e)[:30]}"
 
 # 3. INTERFAȚA
 if check_password():
-    st.title("🍷 Wine Watcher: Ornellaia")
-    
+    st.title("🍷 Wine Watcher: Ornellaia 0.75L")
+    st.caption("Căutare filtrată exclusiv pentru varianta standard de 750ml.")
+
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
         {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
@@ -85,40 +93,11 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🔄 Verifică Toate Prețurile"):
+    if st.button("🚀 Verifică Oferte 0.75L"):
         rezultate = []
         erori = []
         bara = st.progress(0)
         
         for i, s in enumerate(surse):
-            with st.spinner(f'Analizăm {s["Magazin"]}...'):
+            with st.spinner(f'Căutăm {s["Magazin"]} (sticla 0.75L)...'):
                 pret, msg = get_price_v3(s["URL"])
-                if pret:
-                    rezultate.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
-                else:
-                    erori.append(f"{s['Magazin']}: {msg}")
-                time.sleep(2) # Pauză mai lungă pentru a fi "invizibili"
-            bara.progress((i + 1) / len(surse))
-        
-        if rezultate:
-            df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
-            st.balloons()
-            
-            # Metrică principală
-            st.metric("Cea mai bună ofertă", f"{df.iloc[0]['Preț (RON)']} RON", f"la {df.iloc[0]['Magazin']}")
-            
-            # Afișare tabel curat
-            st.write("### Clasament prețuri:")
-            st.table(df[["Magazin", "Preț (RON)"]])
-            
-            # Butoane de cumpărare
-            for _, row in df.iterrows():
-                st.link_button(f"🛒 Cumpără de la {row['Magazin']} ({row['Preț (RON)']} RON)", row['Link'])
-        
-        if erori:
-            with st.expander("⚠️ Detalii despre magazinele care nu au răspuns"):
-                for e in erori:
-                    st.write(e)
-                    
-    st.divider()
-    st.caption("Notă: Dacă un preț nu apare, reîncearcă peste 1 minut. Site-urile protejate pot bloca cereri repetate.")
