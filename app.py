@@ -110,4 +110,10 @@ if check_password():
             st.balloons()
             df = pd.DataFrame(results).sort_values(by="Preț (RON)")
             st.subheader("📊 Tabel Prețuri Finale (TVA inclus)")
-            st.dataframe(df[["Magazin", "Preț (RON)", "Verificat la"]], use_container_
+            st.dataframe(df[["Magazin", "Preț (RON)", "Verificat la"]], use_container_width=True, hide_index=True)
+            
+            cols = st.columns(len(results))
+            for idx, row in df.iterrows():
+                cols[idx % len(results)].link_button(f"🛒 {row['Magazin']}", row['Link'])
+        else:
+            st.error("❌ Toate încercările au eșuat. Așteaptă 10 minute pentru resetarea IP-ului.")
