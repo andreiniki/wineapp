@@ -6,7 +6,7 @@ import time
 import re
 
 # 1. CONFIGURARE & SECURITATE
-st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷")
+st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷", layout="wide")
 PASSWORD = "CodulEsteVinul"
 
 def check_password():
@@ -22,57 +22,52 @@ def check_password():
         return False
     return True
 
-# 2. MOTORUL DE PRECIZIE
-def get_price_v4(url):
+# 2. MOTORUL DE DETECȚIE TVA
+def get_wine_data(url):
     scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
         res = scraper.get(url, timeout=20)
         if res.status_code != 200:
-            return None, f"Eroare Server ({res.status_code})"
+            return None, None, f"Eroare Server ({res.status_code})"
             
         soup = BeautifulSoup(res.content, "html.parser")
-        text_pret = ""
+        p_cu_tva = None
+        p_fara_tva = None
 
         if "vinimondo.ro" in url:
             meta = soup.find("meta", property="product:price:amount")
-            text_pret = meta["content"] if meta else ""
+            if meta: p_cu_tva = float(meta["content"])
         
         elif "king.ro" in url:
-            # Căutăm specific prețul final cu TVA
-            tag = soup.select_one('span[data-price-type="finalPrice"] .price')
-            if not tag:
-                tag = soup.find("span", class_="price")
-            text_pret = tag.text if tag else ""
+            # King afișează ambele în span-uri cu clase specifice
+            tva_tag = soup.select_one('span[data-price-type="finalPrice"] .price')
+            no_tva_tag = soup.select_one('span[data-price-type="basePrice"] .price')
+            if tva_tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tva_tag.text.replace(',', '.')))
+            if no_tva_tag: p_fara_tva = float(re.sub(r'[^\d.]', '', no_tva_tag.text.replace(',', '.')))
 
         elif "crushwineshop.ro" in url:
-            # Crush folosește structura de WooCommerce cu <bdi>
-            tag = soup.select_one(".summary .price .woocommerce-Price-amount bdi")
-            if not tag:
-                tag = soup.select_one(".price .woocommerce-Price-amount")
-            text_pret = tag.text if tag else ""
+            # Crush de obicei are prețul final vizibil
+            tag = soup.select_one(".woocommerce-Price-amount bdi, .price .amount")
+            if tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
 
         elif "winemag.ro" in url:
             tag = soup.find("span", class_="price-new")
-            text_pret = tag.text if tag else ""
+            if tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
 
-        if text_pret:
-            # Curățare avansată: eliminăm spațiile non-breaking și tot ce nu e cifră/punct/virgulă
-            clean_text = text_pret.replace('\xa0', '').replace(' ', '').replace(',', '.')
-            # Extragem primul grup de cifre care arată a preț (ex: 125.00)
-            match = re.search(r"(\d+[\.]?\d*)", clean_text)
-            if match:
-                valoare = float(match.group(1))
-                # Dacă prețul e absurd de mic (sub 50 lei) sau mare, ignorăm
-                if 50 < valoare < 1000:
-                    return round(valoare, 2), "Succes"
+        # Curățare valori (dacă au fost citite greșit ca 12500 în loc de 125.0)
+        if p_cu_tva and p_cu_tva > 2000: p_cu_tva /= 100
+        if p_fara_tva and p_fara_tva > 2000: p_fara_tva /= 100
+
+        if p_cu_tva or p_fara_tva:
+            return p_cu_tva, p_fara_tva, "Succes"
                 
-        return None, "Preț invalid sau negăsit"
+        return None, None, "Prețuri negăsite"
     except Exception as e:
-        return None, f"Eroare: {str(e)[:30]}"
+        return None, None, f"Eroare: {str(e)[:20]}"
 
-# 3. INTERFAȚA (Rămâne la fel, dar cu funcția nouă)
+# 3. INTERFAȚA
 if check_password():
-    st.title("🍷 Wine Watcher: Ornellaia")
+    st.title("🍷 Wine Watcher: Comparativ TVA")
     
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
@@ -81,28 +76,38 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🔄 Verifică Toate Prețurile"):
+    if st.button("🔄 Verifică Prețurile (Cu/Fără TVA)"):
         rezultate = []
         erori = []
         bara = st.progress(0)
         
         for i, s in enumerate(surse):
             with st.spinner(f'Analizăm {s["Magazin"]}...'):
-                pret, msg = get_price_v4(s["URL"])
-                if pret:
-                    rezultate.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
+                tva_da, tva_nu, msg = get_wine_data(s["URL"])
+                if tva_da or tva_nu:
+                    rezultate.append({
+                        "Magazin": s["Magazin"], 
+                        "Preț cu TVA (RON)": tva_da if tva_da else "N/A",
+                        "Preț fără TVA (RON)": tva_nu if tva_nu else "N/A",
+                        "Link": s["URL"]
+                    })
                 else:
                     erori.append(f"{s['Magazin']}: {msg}")
                 time.sleep(2)
             bara.progress((i + 1) / len(surse))
         
         if rezultate:
-            df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
+            df = pd.DataFrame(rezultate)
+            # Sortăm după prețul cu TVA (dacă există)
+            df_display = df.copy()
             st.balloons()
-            st.metric("Cea mai bună ofertă", f"{df.iloc[0]['Preț (RON)']} RON", f"la {df.iloc[0]['Magazin']}")
-            st.table(df[["Magazin", "Preț (RON)"]])
+            
+            st.write("### Clasament Detaliat:")
+            st.dataframe(df_display, use_container_width=True)
+            
             for _, row in df.iterrows():
-                st.link_button(f"🛒 Cumpără de la {row['Magazin']} ({row['Preț (RON)']} RON)", row['Link'])
+                label = f"🛒 {row['Magazin']} - {row['Preț cu TVA (RON)']} RON"
+                st.link_button(label, row['Link'])
         
         if erori:
             with st.expander("⚠️ Detalii erori"):
