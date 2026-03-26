@@ -4,99 +4,90 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
+import random
+from duckduckgo_search import DDGS  # Trebuie adăugat în requirements.txt
 
-st.set_page_config(page_title="Wine Watcher: Le Volte", page_icon="🍷")
+st.set_page_config(page_title="Le Volte: Deep Search", page_icon="🍷")
 
-def clean_price(text):
-    if not text: return None
-    # Curățăm textul de simboluri și litere
-    text = text.lower().replace('lei', '').replace('ron', '').strip()
-    text = text.replace(',', '.')
-    # Extragem prima secvență de cifre care arată a preț
-    match = re.search(r"(\d+\.\d+|\d+)", text)
-    if match:
-        val = float(match.group(1))
-        if val > 1000: val /= 100  # Corecție pentru formatul 12500 în loc de 125.00
-        return round(val, 2)
-    return None
-
-def get_wine_price(url):
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
-    )
+# 1. LOGICA DE EXTRAGERE ULTRA-FLEXIBILĂ
+def get_price_any_site(url):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
-        res = scraper.get(url, timeout=15)
+        res = scraper.get(url, timeout=10)
         if res.status_code != 200: return None
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # Metoda 1: Meta Tags (Cele mai sigure)
+        # Căutăm meta-tag-ul de preț (standardul de aur)
         meta = soup.find("meta", property="product:price:amount")
-        if meta: return clean_price(meta["content"])
+        if meta: return float(meta["content"].replace(',', '.'))
 
-        # Metoda 2: Selectori specifici pentru magazine populare
-        if "king.ro" in url:
-            tag = soup.find("span", {"data-price-type": "finalPrice"})
-            if tag: return clean_price(tag.text)
-        
-        if "finestore.ro" in url:
-            tag = soup.select_one(".price-new") or soup.select_one(".price")
-            if tag: return clean_price(tag.text)
-
-        # Metoda 3: Căutare generală după clasa "price"
-        price_tags = soup.find_all(class_=re.compile("price", re.I))
-        for tag in price_tags:
-            val = clean_price(tag.text)
-            if val and 90 < val < 400: # Filtru de siguranță pentru 0.75L
-                return val
+        # Dacă nu există meta, căutăm textul care conține "lei" sau "ron"
+        page_text = soup.get_text()
+        # Regex care caută un număr urmat de lei/ron (ex: 119,00 lei)
+        match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+        if match:
+            val = float(match.group(1).replace(',', '.'))
+            return val if val < 500 else val / 100 # Corecție pt format 12500
         return None
     except:
         return None
 
-# INTERFAȚĂ
-st.title("🍷 Scrutin: Le Volte dell'Ornellaia")
-st.info("Monitorizăm prețurile în timp real din cele mai importante magazine din RO.")
+# 2. INTERFAȚĂ
+st.title("🔍 Deep Search: LE VOLTE")
+st.write("Căutăm pe tot internetul românesc site-uri care conțin cuvintele cheie.")
 
-if st.button("🚀 Scanează Toate Magazinele"):
-    # LISTA TA DE SURSE ACTUALIZATĂ
-    surse = [
-        {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"},
-        {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
-        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
-        {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
-        {"Magazin": "E-Bauturi", "URL": "https://www.e-bauturi.ro/cumpara/vin-rosu-ornellaia-le-volte-dell-ornellaia-0-75l-8447"},
-        {"Magazin": "Nobil Wine", "URL": "https://nobilwine.ro/magazin/vinuri/vinuri-rosii/ornellaia-le-volte-dellornellaia/"},
-        {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
-        {"Magazin": "ProduseItaliene", "URL": "https://www.produseitaliene.ro/vinuri-italiene/vinuri-rosii/le-volte-dell-ornellaia-igt-toscana-750-ml-2022"}
-    ]
+# Căutare după cuvinte cheie
+keywords = "LE VOLTE pret ron site:.ro"
 
-    results = []
-    status = st.empty()
-    progress = st.progress(0)
+if st.button("🚀 Începe Căutarea Globală"):
+    rezultate = []
     
-    for i, s in enumerate(surse):
-        status.text(f"🔎 Analizăm oferta de la {s['Magazin']}...")
-        price = get_wine_price(s["URL"])
-        if price:
-            results.append({"Magazin": s["Magazin"], "Preț (RON)": price, "Link": s["URL"]})
-        
-        progress.progress((i + 1) / len(surse))
-        time.sleep(1.2) # Pauză scurtă pentru a evita blocajele de tip "429 Too Many Requests"
+    with st.status("Răscolim internetul...", expanded=True) as status:
+        try:
+            # Folosim DuckDuckGo pentru a evita blocajele Google
+            with DDGS() as ddgs:
+                search_results = [r for r in ddgs.text(keywords, max_results=20)]
+            
+            for r in search_results:
+                link = r['href']
+                # Filtrăm site-urile care nu sunt magazine (forumuri, știri, etc.)
+                if any(x in link for x in ["facebook", "emag", "olx", "vivino", "stiri", "prahova"]): continue
+                
+                nume_site = link.split('/')[2].replace('www.', '')
+                status.write(f"🔎 Verificăm prețul pe: **{nume_site}**")
+                
+                pret = get_price_any_site(link)
+                # Filtru: Prețul trebuie să fie realist pentru Le Volte (ex: 95 - 250 RON)
+                if pret and 95 < pret < 250:
+                    rezultate.append({"Magazin": nume_site, "Preț (RON)": pret, "Link": link})
+                
+                time.sleep(random.uniform(1, 2)) # Pauză anti-blocaj
+                
+        except Exception as e:
+            st.error(f"Eroare la căutare: {e}")
 
-    status.empty()
-
-    if results:
-        df = pd.DataFrame(results).sort_values(by="Preț (RON)")
+    if rezultate:
+        df = pd.DataFrame(rezultate).drop_duplicates(subset=['Magazin']).sort_values('Preț (RON)')
         st.balloons()
-        st.subheader("📊 Rezultate Găsite:")
-        
-        # Tabel curat
-        st.dataframe(df[["Magazin", "Preț (RON)"]], use_container_width=True, hide_index=True)
-        
-        # Butoane de acces rapid
-        st.write("---")
-        cols = st.columns(2)
-        for idx, row in df.iterrows():
-            with cols[idx % 2]:
-                st.link_button(f"🛒 {row['Magazin']}: {row['Preț (RON)']} RON", row['Link'])
+        st.table(df[["Magazin", "Preț (RON)"]])
+        for _, row in df.iterrows():
+            st.link_button(f"🛒 Mergi la {row['Magazin']}", row['Link'])
     else:
-        st.error("Nu am putut prelua prețurile. Verificați conexiunea la internet sau link-urile.")
+        st.warning("Nu am găsit oferte noi prin căutare automată. Site-urile pot fi protejate.")
+
+# 3. LISTA TA DE AUR (Site-uri găsite de mine separat)
+st.write("---")
+st.subheader("📍 Magazine confirmate (Link Direct)")
+surse_extra = [
+    {"Magazin": "Wine360", "URL": "https://wine360.ro/le-volte-dell-ornellaia-toscana-igt-rosso"},
+    {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rosu-sec-le-volte-dell-ornellaia-0-75l"},
+    {"Magazin": "On-Vins", "URL": "https://on-vins.ro/produs/le-volte-dellornellaia-toscana-igt/"},
+    {"Magazin": "Despre Vin", "URL": "https://desprevin.ro/vinuri/le-volte-dell-ornellaia-2021-igp-toscana-rosso/"}
+]
+
+if st.button("📊 Verifică Magazinele Confirmate"):
+    for s in surse_extra:
+        p = get_price_any_site(s["URL"])
+        if p:
+            st.write(f"✅ **{s['Magazin']}**: {p} RON")
+            st.link_button(f"Mergi la {s['Magazin']}", s['URL'])
