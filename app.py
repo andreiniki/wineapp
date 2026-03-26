@@ -4,8 +4,9 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
+import random
 
-# 1. CONFIGURARE
+# 1. CONFIGURARE & PAROLĂ
 st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷", layout="wide")
 PASSWORD = "CodulEsteVinul"
 
@@ -22,55 +23,61 @@ def check_password():
         return False
     return True
 
-def extract_price(text):
-    if not text: return None
-    # Curățăm textul de simboluri și păstrăm doar cifrele/punctul
-    clean = re.sub(r'[^\d.,]', '', text).replace(',', '.')
-    match = re.search(r"(\d+\.\d+|\d+)", clean)
-    if match:
-        val = float(match.group(1))
-        if val > 5000: val /= 100
-        return round(val, 2)
-    return None
+# 2. LOGICA DE EXTRACȚIE ROBUSTĂ
+def get_wine_data_v10(url):
+    # Identități false pentru a păcăli protecția
+    agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+    ]
+    
+    scraper = cloudscraper.create_scraper()
+    headers = {
+        'User-Agent': random.choice(agents),
+        'Referer': 'https://www.google.com/'
+    }
 
-# 2. MOTORUL HIBRID
-def get_wine_data_v9(url):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
     try:
-        res = scraper.get(url, timeout=20)
+        res = scraper.get(url, headers=headers, timeout=15)
+        if res.status_code != 200:
+            return None, None, f"Blocat (Cod {res.status_code})"
+            
         soup = BeautifulSoup(res.content, "html.parser")
         p_cu_tva = None
-        p_fara_tva = None
 
+        # Strategie per site (bazată pe ce a funcționat anterior)
         if "vinimondo.ro" in url:
-            # Revenim la metoda V3 care a mers: meta tag-ul de pret
             tag = soup.find("meta", property="product:price:amount")
-            if tag: p_cu_tva = extract_price(tag["content"])
+            if tag: p_cu_tva = float(tag["content"])
         
         elif "king.ro" in url:
             tag = soup.select_one('span[data-price-type="finalPrice"] .price')
-            if tag: p_cu_tva = extract_price(tag.text)
-            
+            if not tag: tag = soup.select_one(".price-final_price .price")
+            if tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
+
         elif "crushwineshop.ro" in url:
-            tag = soup.select_one(".summary .price .woocommerce-Price-amount bdi")
-            if tag: p_cu_tva = extract_price(tag.text)
+            tag = soup.select_one(".woocommerce-Price-amount bdi, .price .amount")
+            if tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
 
         elif "winemag.ro" in url:
             tag = soup.select_one(".price-new, .price")
-            if tag: p_cu_tva = extract_price(tag.text)
+            if tag: p_cu_tva = float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
 
-        # Calcul TVA 21%
         if p_cu_tva:
+            # Corecție zecimale (ex: 12500 -> 125.0)
+            if p_cu_tva > 2000: p_cu_tva /= 100
             p_fara_tva = round(p_cu_tva / 1.21, 2)
-            return p_cu_tva, p_fara_tva, "Succes"
+            return round(p_cu_tva, 2), p_fara_tva, "Succes"
             
-        return None, None, "Preț negăsit"
+        return None, None, "Preț negăsit în pagină"
     except Exception as e:
-        return None, None, str(e)
+        return None, None, "Eroare conexiune"
 
 # 3. INTERFAȚĂ
 if check_password():
-    st.title("🍷 Wine Watcher: Monitorizare Prețuri")
+    st.title("🍷 Wine Watcher: Ornellaia")
+    st.info("Sfat: Dacă primești erori, așteaptă 2 minute înainte de a scana din nou pentru a evita blocarea IP-ului.")
     
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
@@ -79,30 +86,27 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🔄 Scanează acum"):
+    if st.button("🚀 Scanează Magazinele"):
         results = []
         for s in surse:
-            with st.status(f"Analizăm {s['Magazin']}...") as status:
-                p_tva, p_fara, msg = get_wine_data_v9(s["URL"])
+            with st.spinner(f"Se verifică {s['Magazin']}..."):
+                p_tva, p_fara, msg = get_wine_data_v10(s["URL"])
                 if p_tva:
                     results.append({
                         "Magazin": s["Magazin"],
-                        "Preț cu TVA (21%)": f"{p_tva:.2f} RON",
+                        "Preț cu TVA": f"{p_tva:.2f} RON",
                         "Preț fără TVA": f"{p_fara:.2f} RON",
-                        "URL": s["URL"]
+                        "Status": "✅ OK"
                     })
-                    status.update(label=f"✅ {s['Magazin']}: {p_tva} RON", state="complete")
                 else:
-                    status.update(label=f"❌ {s['Magazin']}: Eșuat", state="error")
-                time.sleep(2)
+                    results.append({
+                        "Magazin": s["Magazin"],
+                        "Preț cu TVA": "N/A",
+                        "Preț fără TVA": "N/A",
+                        "Status": f"❌ {msg}"
+                    })
+                time.sleep(random.uniform(2, 4)) # Pauză variabilă pentru a părea uman
 
-        if results:
-            st.balloons()
-            df = pd.DataFrame(results)
-            st.subheader("📊 Tabel Comparativ")
-            st.table(df[["Magazin", "Preț cu TVA (21%)", "Preț fără TVA"]])
-            
-            # Butoane rapide de acces
-            cols = st.columns(len(results))
-            for i, r in enumerate(results):
-                cols[i].link_button(f"🛒 {r['Magazin']}", r['URL'])
+        df = pd.DataFrame(results)
+        st.subheader("📊 Rezultate Actualizate")
+        st.dataframe(df, use_container_width=True, hide_index=True)
