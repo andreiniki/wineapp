@@ -7,7 +7,7 @@ import re
 import random
 from datetime import datetime
 
-# 1. CONFIGURARE
+# 1. CONFIGURARE PAGINĂ
 st.set_page_config(page_title="Wine Watcher", page_icon="🍷")
 PASSWORD = "CodulEsteVinul"
 
@@ -26,37 +26,40 @@ def check_password():
 
 def clean_price(text):
     if not text: return None
-    # Păstrăm doar cifrele și separatorii
     digits = re.sub(r'[^\d.,]', '', text).replace(',', '.')
     match = re.search(r"(\d+\.\d+|\d+)", digits)
     if match:
         val = float(match.group(1))
-        # Corecție pentru formate de tipul 12500 în loc de 125.00
         if val > 5000: val /= 100
         return round(val, 2)
     return None
 
-# 2. MOTORUL DE CĂUTARE
+# 2. MOTORUL DE CĂUTARE (Focalizat pe preț final)
 def get_final_price(url):
+    # Folosim cloudscraper pentru a trece de protecții
     scraper = cloudscraper.create_scraper()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/119.0.0.0'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Accept-Language': 'ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7'
+    }
     
     try:
-        res = scraper.get(url, headers=headers, timeout=15)
+        res = scraper.get(url, headers=headers, timeout=20)
+        if res.status_code != 200: return None
+        
         soup = BeautifulSoup(res.content, "html.parser")
         
         if "vinimondo.ro" in url:
-            # Metoda V3 confirmată pentru 125 RON
+            # Selector specific pentru prețul corect de 125 RON
             tag = soup.find("meta", property="product:price:amount")
             return clean_price(tag["content"]) if tag else None
         
         elif "king.ro" in url:
-            # Selectorul de preț final confirmat
             tag = soup.select_one('span[data-price-type="finalPrice"] .price')
             return clean_price(tag.text) if tag else None
 
         elif "crushwineshop.ro" in url:
-            tag = soup.select_one(".woocommerce-Price-amount bdi, .price .amount")
+            tag = soup.select_one(".summary .price .woocommerce-Price-amount bdi, .amount")
             return clean_price(tag.text) if tag else None
 
         elif "winemag.ro" in url:
@@ -67,10 +70,11 @@ def get_final_price(url):
     except:
         return None
 
-# 3. INTERFAȚĂ
+# 3. INTERFAȚĂ UTILIZATOR
 if check_password():
-    st.title("🍷 Wine Watcher: Le Volte dell'Ornellaia")
-    
+    st.title("🍷 Wine Watcher: Monitorizare Prețuri")
+    st.write("Verifică prețul final (TVA inclus) pentru Le Volte dell'Ornellaia.")
+
     surse = [
         {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
         {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
@@ -78,29 +82,26 @@ if check_password():
         {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
     ]
 
-    if st.button("🔍 Actualizează Prețurile"):
+    if st.button("🚀 Scanează Magazinele"):
         results = []
         now = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
         
-        for s in surse:
-            with st.spinner(f"Verificăm {s['Magazin']}..."):
-                price = get_final_price(s["URL"])
-                if price:
-                    results.append({
-                        "Magazin": s["Magazin"], 
-                        "Preț (RON)": price, 
-                        "Ultima Verificare": now,
-                        "Link": s["URL"]
-                    })
-                time.sleep(random.uniform(1.5, 3.0))
+        progress_bar = st.progress(0)
+        for i, s in enumerate(surse):
+            price = get_final_price(s["URL"])
+            if price:
+                results.append({
+                    "Magazin": s["Magazin"], 
+                    "Preț (RON)": price, 
+                    "Ultima Verificare": now,
+                    "Link": s["URL"]
+                })
+            # Pauză esențială pentru a evita blocarea
+            time.sleep(random.uniform(2, 4))
+            progress_bar.progress((i + 1) / len(surse))
 
         if results:
             st.balloons()
             df = pd.DataFrame(results).sort_values(by="Preț (RON)")
-            st.subheader("Clasament prețuri (TVA Inclus):")
-            st.dataframe(df[["Magazin", "Preț (RON)", "Ultima Verificare"]], use_container_width=True, hide_index=True)
-            
-            for _, row in df.iterrows():
-                st.link_button(f"🛒 Cumpără de la {row['Magazin']} ({row['Preț (RON)']} RON)", row['Link'])
-        else:
-            st.warning("⚠️ Nu am putut prelua prețurile. Site-urile pot fi temporar indisponibile.")
+            st.subheader("📊 Rezultate Actualizate")
+            st.dataframe(df[["Magazin", "Preț (RON
