@@ -65,4 +65,36 @@ def get_price_v3(url):
 st.title("🍷 Wine Watcher: Ornellaia 0.75L")
 
 surse = [
-    {"Magazin": "Vinimondo", "URL": "
+    {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+    {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+    {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
+    {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"}
+]
+
+if st.button("🚀 Verifică Prețurile Acum"):
+    rezultate = []
+    
+    # Folosim containere pentru a vedea progresul în timp real
+    status_container = st.container()
+    
+    for s in surse:
+        with status_container:
+            with st.status(f"Se verifică {s['Magazin']}...", expanded=True) as status:
+                pret, msg = get_price_v3(s["URL"])
+                if pret:
+                    rezultate.append({"Magazin": s["Magazin"], "Preț (RON)": pret, "Link": s["URL"]})
+                    status.update(label=f"✅ {s['Magazin']}: {pret} RON", state="complete")
+                else:
+                    status.update(label=f"❌ {s['Magazin']}: {msg}", state="error")
+                time.sleep(3) # Pauză anti-blocaj
+
+    if rezultate:
+        st.divider()
+        df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)")
+        st.subheader("📊 Rezultate Găsite")
+        st.table(df[["Magazin", "Preț (RON)"]])
+        
+        for r in rezultate:
+            st.link_button(f"🛒 {r['Magazin']} - {r['Preț (RON)']} RON", r['Link'])
+    else:
+        st.error("⚠️ Nu am putut prelua niciun preț. Cel mai probabil, adresa IP a fost blocată temporar de magazine.")
