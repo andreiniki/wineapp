@@ -4,95 +4,88 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
+import random
 from googlesearch import search
 
-# 1. CONFIGURARE & SECURITATE
-st.set_page_config(page_title="Wine Watcher Universal", page_icon="🍷")
-PASSWORD = "CodulEsteVinul"
+# 1. CONFIGURARE
+st.set_page_config(page_title="Wine Watcher Pro", page_icon="🍷")
 
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.title("🔐 Acces Privat Crama")
-        parola = st.text_input("Introdu parola:", type="password")
-        if st.button("Intră"):
-            if parola == PASSWORD:
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("Parolă incorectă!")
-        return False
-    return True
+# Listă de User-Agents pentru a evita detectarea ca robot
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+]
 
-# 2. MOTORUL DE EXTRARE (Logica ta stabilă din V3)
-def get_price_flexible(url):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+def get_price_stealth(url):
+    # Folosim un User-Agent random la fiecare cerere
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    )
+    headers = {'User-Agent': random.choice(USER_AGENTS)}
+    
     try:
-        res = scraper.get(url, timeout=15)
+        res = scraper.get(url, headers=headers, timeout=15)
         if res.status_code != 200: return None
+        
         soup = BeautifulSoup(res.content, "html.parser")
         
-        # Prioritate 1: Meta tag (Cel mai precis)
+        # 1. Încercăm Meta Tags (cele mai rezistente la schimbări de design)
         meta = soup.find("meta", property="product:price:amount")
         if meta: return float(meta["content"].replace(',', '.'))
-
-        # Prioritate 2: King.ro specific
+        
+        # 2. Logica pentru King.ro (Selectorul tău calibrat)
         if "king.ro" in url:
             tag = soup.find("span", {"data-price-type": "finalPrice"})
             if tag: return float(re.sub(r'[^\d.]', '', tag.text.replace(',', '.')))
 
-        # Prioritate 3: Căutare text (Universal)
-        page_text = soup.get_text()
-        match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+        # 3. Căutare brută în text (Regex) - ultima șansă
+        text = soup.get_text()
+        match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', text, re.IGNORECASE)
         if match:
             val = float(match.group(1).replace(',', '.'))
-            return val if val < 2000 else val / 100
+            return val if val < 1000 else val / 100
+            
         return None
     except:
         return None
 
-# 3. INTERFAȚĂ
-if check_password():
-    st.title("🍷 Wine Watcher: Scrutin Național")
-    produs_cautat = st.text_input("Ce vin căutăm astăzi?", value="Le Volte dell'Ornellaia 0.75L")
-    
-    if st.button("🚀 Scanează Magazinele din România"):
-        rezultate = []
-        # Query specific pentru a forța rezultate din magazine RO
-        query = f'"{produs_cautat}" pret lei site:.ro'
-        
-        with st.status("Google caută magazinele...", expanded=True) as status:
-            # SINTAXĂ NOUĂ: search(query, sleep_interval=2)
-            # Extragem link-urile unul câte unul pentru a evita TypeError
-            try:
-                search_results = search(query, sleep_interval=2)
-                links_count = 0
-                
-                for link in search_results:
-                    if links_count >= 12: break # Limităm la 12 magazine pentru viteză
-                    
-                    # Filtrăm site-urile care nu sunt magazine directe
-                    if any(x in link for x in ["stiri", "forum", "facebook", "emag", "vivino"]):
-                        continue
-                    
-                    nume_magazin = link.split('/')[2].replace('www.', '')
-                    status.write(f"🔎 Verificăm prețul pe: **{nume_magazin}**")
-                    
-                    pret = get_price_flexible(link)
-                    if pret and 90 < pret < 350: # Filtru de siguranță
-                        rezultate.append({"Magazin": nume_magazin, "Preț (RON)": pret, "Link": link})
-                        links_count += 1
-                    
-                    time.sleep(1) # Pauză anti-blocaj
-            except Exception as e:
-                st.error(f"Eroare la căutare: {e}")
+# 2. INTERFAȚĂ
+st.title("🍷 Wine Watcher: Scrutin Național")
+produs = st.text_input("Denumire Vin:", "Le Volte dell'Ornellaia 0.75L")
 
-        if rezultate:
-            df = pd.DataFrame(rezultate).sort_values(by="Preț (RON)").drop_duplicates(subset=['Magazin'])
-            st.balloons()
-            st.subheader(f"Cele mai bune oferte pentru: {produs_cautat}")
-            st.table(df[["Magazin", "Preț (RON)"]])
+if st.button("🚀 Scanează România"):
+    rezultate = []
+    
+    with st.status("Căutăm oferte active...", expanded=True) as status:
+        # Căutare Google cu interval de siguranță mărit
+        query = f'"{produs}" pret site:.ro -inurl:forum'
+        
+        try:
+            # sleep_interval mare pentru a nu fi blocați de Google
+            search_results = search(query, sleep_interval=5, num_results=10)
             
-            for _, row in df.iterrows():
-                st.link_button(f"🛒 Mergi la {row['Magazin']} ({row['Preț (RON)']} RON)", row['Link'])
-        else:
-            st.warning("Nu am găsit prețuri valide. Site-urile ar putea bloca accesul automatizat.")
+            for link in search_results:
+                if any(x in link for x in ["facebook", "emag", "okazii", "olx"]): continue
+                
+                magazin = link.split('/')[2].replace('www.', '')
+                status.write(f"Verificăm magazinul: **{magazin}**...")
+                
+                pret = get_price_stealth(link)
+                if pret and 90 < pret < 300:
+                    rezultate.append({"Magazin": magazin, "Preț (RON)": pret, "Link": link})
+                
+                # Pauză random între magazine pentru a părea comportament uman
+                time.sleep(random.uniform(2, 4))
+                
+        except Exception as e:
+            st.error("Google a detectat prea multe cereri. Așteaptă 10 minute.")
+
+    if rezultate:
+        df = pd.DataFrame(rezultate).drop_duplicates(subset=['Magazin']).sort_values('Preț (RON)')
+        st.balloons()
+        st.table(df[["Magazin", "Preț (RON)"]])
+        for _, row in df.iterrows():
+            st.link_button(f"🛒 Cumpără de la {row['Magazin']}", row['Link'])
+    else:
+        st.warning("Nu am găsit prețuri. Încearcă să fii mai specific în căutare.")
