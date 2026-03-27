@@ -4,116 +4,122 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
-import json
-import os
-import random
 
-# --- 1. CONFIGURARE ---
-st.set_page_config(page_title="Wine Watcher V6", page_icon="🍷", layout="wide")
+# 1. CONFIGURARE & SECURITATE (Păstrăm ce a mers în V3)
+st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷", layout="wide")
 PASSWORD = "CodulEsteVinul"
 
-SITES = [
-    {"store": "King.ro", "search_url": "https://king.ro/catalogsearch/result/?q={q}"},
-    {"store": "FineStore", "search_url": "https://www.finestore.ro/?s={q}&post_type=product"},
-    {"store": "Vinimondo", "search_url": "https://vinimondo.ro/?s={q}&post_type=product"},
-    {"store": "WineMag", "search_url": "https://www.winemag.ro/?s={q}&post_type=product"},
-    {"store": "Drinkz", "search_url": "https://drinkz.ro/catalogsearch/result/?q={q}"},
-    {"store": "eMAG", "search_url": "https://www.emag.ro/search/{q}"}
-]
+def check_password():
+    if "password_correct" not in st.session_state:
+        st.title("🔐 Acces Privat Crama")
+        parola = st.text_input("Introdu parola:", type="password")
+        if st.button("Intră"):
+            if parola == PASSWORD:
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Parolă incorectă!")
+        return False
+    return True
 
-# --- 2. MOTOR DE CĂUTARE AGRESIV (HUMAN LIKE) ---
-def find_prices_in_raw_text(soup, query):
-    """Căutăm prețuri oriunde în pagină, ignorând structura HTML fixă"""
-    results = []
-    # Curățăm query-ul pentru a căuta bucăți din el
-    keywords = query.lower().split()
-    
-    # Căutăm toate elementele care ar putea conține un produs
-    containers = soup.find_all(['div', 'li', 'article', 'tr'])
-    
-    for container in containers:
-        text = container.get_text(separator=' ', strip=True)
-        # Verificăm dacă măcar 2 cuvinte din vin sunt în acest bloc de text
-        matches = sum(1 for word in keywords if word in text.lower())
-        
-        if matches >= 1:
-            # Căutăm tiparul de preț: cifre urmate de lei/ron sau invers
-            price_match = re.search(r'(\d{2,4}(?:[.,]\d{2})?)\s?(?:lei|RON)', text, re.IGNORECASE)
-            if price_match:
-                try:
-                    raw_p = price_match.group(1).replace(',', '.')
-                    val = float(re.sub(r'[^\d.]', '', raw_p))
-                    
-                    # Identificăm un titlu plauzibil în acel container (primul link sau text lung)
-                    link_tag = container.find('a', href=True)
-                    name = link_tag.get_text().strip() if link_tag else "Produs identificat"
-                    if len(name) < 5: name = text[:50] + "..."
-                    
-                    if 30 < val < 15000: # Filtru de siguranță
-                        results.append({
-                            "Vin": name,
-                            "Preț": round(val, 2),
-                            "Link": link_tag['href'] if link_tag else "#"
-                        })
-                except: continue
-    
-    # Sortăm după preț și luăm cel mai ieftin (unic)
-    if results:
-        unique = sorted(results, key=lambda x: x['Preț'])
-        return unique[0]
-    return None
+# 2. MOTORUL DE SCRAPING V3 (ORIGINALUL CARE MERGE)
+def get_price_v3_core(url, site_name):
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+    try:
+        res = scraper.get(url, timeout=20)
+        if res.status_code != 200:
+            return None, None, f"Eroare Server ({res.status_code})"
+            
+        soup = BeautifulSoup(res.content, "html.parser")
+        text_pret = ""
+        full_name = ""
 
-# --- 3. LOGICA PRINCIPALĂ ---
-if "auth" not in st.session_state:
-    st.title("🔐 Acces Crama")
-    pwd = st.text_input("Parola:", type="password")
-    if st.button("Intră"):
-        if pwd == PASSWORD: st.session_state["auth"] = True; st.rerun()
-else:
-    st.title("🍷 Scrutin V6: Detectare prin Amprentă Textuală")
-    
-    q = st.text_input("Ce vin cauți exact (ex: Rosa dei Frati):", "Rosa dei Frati")
+        # Identificăm numele produsului și prețul (Logica V3)
+        if "vinimondo.ro" in url:
+            meta = soup.find("meta", property="product:price:amount")
+            text_pret = meta["content"] if meta else ""
+        elif "king.ro" in url:
+            tag = soup.find("span", {"data-price-type": "finalPrice"})
+            text_pret = tag.text if tag else ""
+        elif "crushwineshop.ro" in url:
+            tag = soup.select_one("p.price ins span.woocommerce-Price-amount, p.price span.woocommerce-Price-amount")
+            text_pret = tag.text if tag else ""
+        elif "winemag.ro" in url:
+            tag = soup.find("span", class_="price-new")
+            text_pret = tag.text if tag else ""
 
-    if st.button(f"🚀 Scanează toată piața pentru {q}"):
-        # Folosim un browser mai nou în configurarea scraper-ului
-        scraper = cloudscraper.create_scraper(
-            browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-        )
-        
-        final_list = []
-        bar = st.progress(0)
-        
-        for i, site in enumerate(SITES):
-            st.write(f"🔎 Verificăm {site['store']}...")
-            try:
-                # Simulăm un user real care așteaptă puțin
-                time.sleep(random.uniform(1, 3))
-                url = site["search_url"].format(q=q.replace(" ", "+"))
-                res = scraper.get(url, timeout=15)
+        # Fallback Regex (Inima stabilității V3)
+        if not text_pret:
+            page_text = soup.get_text()
+            match = re.search(r'(\d{2,4}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
+            if match:
+                text_pret = match.group(1)
+
+        if text_pret:
+            clean_digits = text_pret.replace(',', '.').replace(' ', '')
+            numere = re.findall(r"[-+]?\d*\.\d+|\d+", clean_digits)
+            if numere:
+                valoare = float(numere[0])
+                if valoare > 3000: valoare = valoare / 100 
                 
-                if res.status_code == 200:
-                    soup = BeautifulSoup(res.content, "html.parser")
-                    found = find_prices_in_raw_text(soup, q)
-                    if found:
-                        final_list.append({
-                            "Magazin": site["store"],
-                            "Denumire": found["Vin"],
-                            "Preț (RON)": found["Preț"],
-                            "Link": found["Link"] if found["Link"].startswith("http") else url
-                        })
-                else:
-                    st.warning(f"⚠️ {site['store']} a returnat eroarea {res.status_code}")
-            except Exception as e:
-                st.error(f"❌ {site['store']} blocat.")
-            
-            bar.progress((i + 1) / len(SITES))
+                # Extragem ANUL și FORMATUL din titlu sau text
+                year_match = re.search(r'\b(19|20)\d{2}\b', soup.get_text())
+                year = year_match.group(0) if year_match else "N/A"
+                
+                fmt = "0.75L"
+                txt_low = soup.get_text().lower()
+                if "1.5" in txt_low or "magnum" in txt_low: fmt = "1.5L"
+                elif "3l" in txt_low or "double" in txt_low: fmt = "3L"
+                
+                return valoare, {"an": year, "format": fmt}, "Succes"
+                
+        return None, None, "Nu am putut citi prețul"
+    except Exception as e:
+        return None, None, f"Eroare: {str(e)[:30]}"
 
-        if final_list:
-            df = pd.DataFrame(final_list).sort_values("Preț (RON)")
-            st.success("Am găsit următoarele oferte!")
-            st.table(df[["Magazin", "Preț (RON)", "Denumire"]])
+# 3. INTERFAȚA
+if check_password():
+    st.title("🍷 Wine Watcher: Monitorizare V3 Robust")
+    
+    surse = [
+        {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+        {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+        {"Magazin": "Crush Wine Shop", "URL": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
+        {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
+        {"Magazin": "AlcoolScont", "URL": "https://www.alcoolscont.ro/vin-rosu-le-volte-dell-ornellaia-0-75l.html"}
+    ]
+
+    if st.button("🔄 Verifică Toate Prețurile"):
+        rezultate = []
+        bara = st.progress(0)
+        
+        for i, s in enumerate(surse):
+            with st.spinner(f'Analizăm {s["Magazin"]}...'):
+                pret, meta, msg = get_price_v3_core(s["URL"], s["Magazin"])
+                if pret:
+                    rezultate.append({
+                        "Magazin": s["Magazin"], 
+                        "An": meta["an"],
+                        "Format": meta["format"],
+                        "Preț (RON)": pret, 
+                        "Link": s["URL"]
+                    })
+                time.sleep(2)
+            bara.progress((i + 1) / len(surse))
+        
+        if rezultate:
+            df = pd.DataFrame(rezultate)
             
-            for _, row in df.iterrows():
-                st.link_button(f"🛒 Cumpără de la {row['Magazin']} - {row['Preț (RON)']} RON", row['Link'])
+            # Afișare pe categorii de format, așa cum ai cerut
+            for format_grup in df["Format"].unique():
+                st.subheader(f"📦 Format: {format_grup}")
+                sub_df = df[df["Format"] == format_grup].sort_values("Preț (RON)")
+                st.table(sub_df[["An", "Magazin", "Preț (RON)"]])
+                
+                for _, row in sub_df.iterrows():
+                    st.link_button(f"🛒 {row['Magazin']} ({row['An']})", row['Link'])
         else:
-            st.error("Niciun rezultat. Site-urile au blocat cererea automată.")
+            st.error("Nu am găsit prețuri. Verifică manual dacă link-urile mai sunt valide.")
+
+    st.divider()
+    st.caption("Această versiune folosește exclusiv motorul V3 care a confirmat succesul.")
