@@ -10,186 +10,172 @@ import random
 import plotly.express as px
 from datetime import datetime
 
-# --- 1. CONFIGURARE & PERSISTENȚĂ ---
-st.set_page_config(page_title="Wine Watcher Pro", page_icon="🍷", layout="wide")
+# --- 1. CONFIGURARE ---
+st.set_page_config(page_title="Wine Watcher V4", page_icon="🍷", layout="wide")
 
 WINES_FILE = "wines_list.json"
 HISTORY_FILE = "price_history.json"
 PASSWORD = "CodulEsteVinul"
 
-def load_data(file, default):
-    if os.path.exists(file):
-        try:
-            with open(file, 'r', encoding='utf-8') as f: return json.load(f)
-        except: return default
-    return default
-
-def save_data(file, data):
-    with open(file, 'w', encoding='utf-8') as f: 
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-# --- 2. MOTORUL DE EXTRACȚIE DIN V3 (ULTRA ROBUST) ---
-def extract_price_v3(soup, url):
-    text_pret = ""
-    
-    # Strategie specifică pe domenii (preluată din V3)
-    if "vinimondo.ro" in url:
-        meta = soup.find("meta", property="product:price:amount")
-        text_pret = meta["content"] if meta else ""
-    
-    elif "king.ro" in url:
-        tag = soup.find("span", {"data-price-type": "finalPrice"})
-        text_pret = tag.text if tag else ""
-
-    elif "crushwineshop.ro" in url:
-        tag = soup.select_one("p.price ins span.woocommerce-Price-amount, p.price span.woocommerce-Price-amount")
-        text_pret = tag.text if tag else ""
-
-    elif "winemag.ro" in url:
-        tag = soup.find("span", class_="price-new")
-        text_pret = tag.text if tag else ""
-
-    # Fallback: Căutare Regex (din V3)
-    if not text_pret:
-        page_text = soup.get_text()
-        match = re.search(r'(\d{2,3}[\.,]\d{2})\s?(?:lei|RON)', page_text, re.IGNORECASE)
-        if match:
-            text_pret = match.group(1)
-
-    if text_pret:
-        # Curățare (din V3)
-        clean_digits = text_pret.replace(',', '.').replace(' ', '')
-        numere = re.findall(r"[-+]?\d*\.\d+|\d+", clean_digits)
-        if numere:
-            valoare = float(numere[0])
-            if valoare > 3000: valoare = valoare / 100 # Corecție formatări
-            if 25 < valoare < 20000: return round(valoare, 2)
-    
-    return None
-
-# --- 3. LOGICĂ DE CĂUTARE PE INTERNET ---
+# --- 2. LISTA EXTINSĂ DE SITE-URI (RETAIL + SPECIALIZATE) ---
 SITES = [
     {"store": "King.ro", "search_url": "https://king.ro/catalogsearch/result/index/?q={q}"},
     {"store": "FineStore", "search_url": "https://www.finestore.ro/?s={q}&post_type=product"},
     {"store": "Vinimondo", "search_url": "https://vinimondo.ro/?s={q}&post_type=product"},
-    {"store": "CrushWine", "search_url": "https://www.crushwineshop.ro/catalogsearch/result/?q={q}"},
     {"store": "WineMag", "search_url": "https://www.winemag.ro/?s={q}&post_type=product"},
-    {"store": "WinePoint", "search_url": "https://www.winepoint.ro/?s={q}&post_type=product"}
+    {"store": "eMAG", "search_url": "https://www.emag.ro/search/{q}"},
+    {"store": "AlcoolScont", "search_url": "https://www.alcoolscont.ro/catalogsearch/result/?q={q}"},
+    {"store": "Drinkz", "search_url": "https://drinkz.ro/catalogsearch/result/?q={q}"},
+    {"store": "CrushWine", "search_url": "https://www.crushwineshop.ro/catalogsearch/result/?q={q}"},
+    {"store": "WinePoint", "search_url": "https://www.winepoint.ro/?s={q}&post_type=product"},
+    {"store": "ProduseMoldovenesti", "search_url": "https://produsemoldovenesti.ro/cauta?q={q}"},
+    {"store": "LiquorHub", "search_url": "https://www.liquorhub.ro/catalogsearch/result/?q={q}"}
 ]
 
-def search_and_extract(site, wine_name, scraper):
-    clean_query = re.sub(r'[^\w\s]', '', wine_name).replace("075L", "").replace("075", "").strip()
-    url = site["search_url"].format(q=clean_query.replace(" ", "+"))
+# --- 3. LOGICĂ DE PARSARE AN ȘI FORMAT ---
+def parse_wine_details(full_name):
+    # Căutăm anul (4 cifre care încep cu 19 sau 20)
+    year_match = re.search(r'\b(19|20)\d{2}\b', full_name)
+    year = year_match.group(0) if year_match else "N/A"
+    
+    # Căutăm formatul
+    format_val = "0.75L" # Default
+    if "magnum" in full_name.lower() or "1.5" in full_name: format_val = "1.5L (Magnum)"
+    elif "3l" in full_name.lower() or "double magnum" in full_name.lower(): format_val = "3L"
+    elif "0.375" in full_name or "375" in full_name: format_val = "0.375L"
+    
+    return year, format_val
+
+# --- 4. MOTORUL DE EXTRACȚIE V3 ROBUST ---
+def extract_price_v3(soup, url):
+    text_pret = ""
+    # Păstrăm logica ta de succes
+    if "king.ro" in url:
+        tag = soup.find("span", {"data-price-type": "finalPrice"})
+        text_pret = tag.text if tag else ""
+    elif "vinimondo.ro" in url:
+        meta = soup.find("meta", property="product:price:amount")
+        text_pret = meta["content"] if meta else ""
+    else:
+        # Selectori universali
+        for sel in [".price-new", ".woocommerce-Price-amount", ".product-price", ".current-price"]:
+            tag = soup.select_one(sel)
+            if tag: 
+                text_pret = tag.get_text()
+                break
+
+    if not text_pret:
+        match = re.search(r'(\d{2,4}[\.,]\d{2})\s?(?:lei|RON)', soup.get_text(), re.IGNORECASE)
+        if match: text_pret = match.group(1)
+
+    if text_pret:
+        clean = text_pret.replace(',', '.').replace(' ', '')
+        nums = re.findall(r"[-+]?\d*\.\d+|\d+", clean)
+        if nums:
+            val = float(nums[0])
+            if val > 5000 and "emag" not in url: val /= 100
+            return round(val, 2)
+    return None
+
+# --- 5. LOGICĂ DE CĂUTARE AVANSATĂ ---
+def deep_search(site, query, scraper):
+    search_url = site["search_url"].format(q=query.replace(" ", "+"))
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
     
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
-        res = scraper.get(url, headers=headers, timeout=20)
-        if res.status_code != 200: return None, None, f"HTTP {res.status_code}"
-        
+        res = scraper.get(search_url, headers=headers, timeout=15)
         soup = BeautifulSoup(res.content, "html.parser")
-        domain = "/".join(url.split("/")[:3])
+        domain = "/".join(search_url.split("/")[:3])
         
-        # Verificăm dacă suntem deja pe pagina produsului
-        direct_price = extract_price_v3(soup, url)
-        if direct_price: return direct_price, url, None
-
-        # Căutăm link-uri de produse
+        found_items = []
+        # Căutăm primele 3 link-uri cele mai relevante pentru a acoperi ani/formate diferite
         links = []
         for a in soup.find_all("a", href=True):
-            href = a["href"]
-            if not href.startswith("http"): href = domain + href
-            if any(x in href.lower() for x in ["cart", "account", "checkout", "contact"]): continue
-            
-            score = sum(1 for word in clean_query.lower().split() if word in a.get_text().lower())
-            if score >= 1: links.append((score, href))
+            href = a["href"] if a["href"].startswith("http") else domain + a["href"]
+            if any(word in a.get_text().lower() for word in query.lower().split()):
+                links.append((a.get_text().strip(), href))
         
-        if not links: return None, None, "Negăsit"
-        
-        links.sort(key=lambda x: x[0], reverse=True)
-        prod_url = links[0][1]
-        
-        res_p = scraper.get(prod_url, headers=headers, timeout=20)
-        soup_p = BeautifulSoup(res_p.content, "html.parser")
-        price = extract_price_v3(soup_p, prod_url)
-        
-        return price, prod_url, None
-    except Exception as e:
-        return None, None, str(e)[:30]
+        # Luăm primele 3 rezultate unice
+        seen_urls = set()
+        for name, url in links[:5]:
+            if url not in seen_urls and len(seen_urls) < 3:
+                seen_urls.add(url)
+                res_p = scraper.get(url, headers=headers, timeout=10)
+                soup_p = BeautifulSoup(res_p.content, "html.parser")
+                
+                # Numele real de pe site (de obicei în H1)
+                h1 = soup_p.find("h1")
+                real_name = h1.get_text().strip() if h1 else name
+                
+                price = extract_price_v3(soup_p, url)
+                if price:
+                    year, fmt = parse_wine_details(real_name)
+                    found_items.append({
+                        "Magazin": site["store"],
+                        "Vin Complet": real_name,
+                        "An": year,
+                        "Format": fmt,
+                        "Preț (RON)": price,
+                        "Link": url
+                    })
+        return found_items
+    except: return []
 
-# --- 4. INTERFAȚĂ ---
+# --- 6. UI ---
 if "auth" not in st.session_state:
-    st.title("🔐 Acces Privat")
-    pwd = st.text_input("Introdu parola:", type="password")
-    if st.button("Intră"):
-        if pwd == PASSWORD:
-            st.session_state["auth"] = True
-            st.rerun()
-        else: st.error("Incorect!")
+    st.title("🔐 Wine Watcher V4")
+    pwd = st.text_input("Parola Crama:", type="password")
+    if st.button("Log In"):
+        if pwd == PASSWORD: st.session_state["auth"] = True; st.rerun()
 else:
-    st.title("🍷 Wine Watcher: Monitorizare Națională")
+    st.title("🍷 Scrutin Național V4: Toate Site-urile & Toate Formatele")
     
-    wines = load_data(WINES_FILE, ["Le Volte dell'Ornellaia", "Rosa dei Frati"])
-    history = load_data(HISTORY_FILE, {})
-
+    # Persistență
+    if not os.path.exists(WINES_FILE): save_data(WINES_FILE, ["Le Volte dell'Ornellaia", "Tignanello"])
+    wines = json.load(open(WINES_FILE, 'r'))
+    
     with st.sidebar:
-        st.header("⚙️ Administrare")
-        new_wine = st.text_input("Adaugă vin (ex: Tignanello):")
-        if st.button("➕ Adaugă"):
-            if new_wine and new_wine not in wines:
-                wines.append(new_wine)
-                save_data(WINES_FILE, wines)
-                st.rerun()
+        st.header("🛒 Adaugă Vin Nou")
+        new_w = st.text_input("Cuvinte cheie (ex: Purcari Nocturne):")
+        if st.button("Adaugă") and new_w:
+            wines.append(new_w); save_data(WINES_FILE, wines); st.rerun()
         
         st.divider()
-        selected_wine = st.selectbox("Vinul de monitorizat:", wines)
-        if st.button("🗑️ Șterge vin"):
-            wines.remove(selected_wine)
-            save_data(WINES_FILE, wines)
-            st.rerun()
+        sel_wine = st.selectbox("Alege vinul:", wines)
+        if st.button("Șterge Vin"):
+            wines.remove(sel_wine); save_data(WINES_FILE, wines); st.rerun()
 
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        if st.button(f"🚀 Scanează România pentru: {selected_wine}"):
-            scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows'})
-            results = []
+    if st.button(f"🔍 Începe Căutarea Națională pentru: {sel_wine}"):
+        scraper = cloudscraper.create_scraper()
+        all_results = []
+        
+        progress = st.progress(0)
+        status = st.empty()
+        
+        for i, site in enumerate(SITES):
+            status.info(f"Se caută pe {site['store']}...")
+            res = deep_search(site, sel_wine, scraper)
+            all_results.extend(res)
+            time.sleep(random.uniform(1.5, 2.5))
+            progress.progress((i + 1) / len(SITES))
+        
+        status.empty()
+        
+        if all_results:
+            df = pd.DataFrame(all_results)
             
-            progress = st.progress(0)
-            status = st.empty()
-            
-            for idx, site in enumerate(SITES):
-                status.info(f"Se verifică {site['store']}...")
-                price, url, err = search_and_extract(site, selected_wine, scraper)
+            # --- AFIȘARE REZULTATE PE FORMATE ---
+            for fmt in df["Format"].unique():
+                st.subheader(f"📦 Format: {fmt}")
+                fmt_df = df[df["Format"] == fmt].sort_values(["An", "Preț (RON)"])
                 
-                if price:
-                    results.append({"Magazin": site['store'], "Preț (RON)": price, "Link": url})
+                # Tabel curat cu denumirea găsită pe site
+                st.dataframe(fmt_df[["An", "Vin Complet", "Magazin", "Preț (RON)"]], 
+                             use_container_width=True, hide_index=True)
                 
-                time.sleep(random.uniform(2, 3)) 
-                progress.progress((idx + 1) / len(SITES))
-            
-            status.empty()
-            
-            if results:
-                df = pd.DataFrame(results).sort_values("Preț (RON)")
-                st.success(f"Analiză completă!")
-                st.dataframe(df[["Magazin", "Preț (RON)"]], use_container_width=True, hide_index=True)
-                
-                # Update Istoric
-                today = datetime.now().strftime("%Y-%m-%d")
-                if selected_wine not in history: history[selected_wine] = []
-                history[selected_wine].append({"data": today, "pret": df["Preț (RON)"].min()})
-                save_data(HISTORY_FILE, history)
-                
-                for res in results:
-                    st.link_button(f"🛒 {res['Magazin']}: {res['Preț (RON)']} RON", res['Link'])
-            else:
-                st.error("Nicio ofertă găsită. Site-urile pot fi protejate.")
-
-    with col2:
-        st.subheader("📈 Evoluție Preț")
-        if selected_wine in history and len(history[selected_wine]) > 0:
-            h_df = pd.DataFrame(history[selected_wine])
-            fig = px.line(h_df, x="data", y="pret", markers=True, title=f"Trend: {selected_wine}")
-            st.plotly_chart(fig, use_container_width=True)
+                # Butoane de cumpărare
+                cols = st.columns(4)
+                for idx, row in fmt_df.iterrows():
+                    cols[idx % 4].link_button(f"🛒 {row['Magazin']} ({row['An']}): {row['Preț (RON)']} RON", row['Link'])
         else:
-            st.info("Efectuează o scanare pentru istoric.")
+            st.error("Nu am găsit rezultate. Încearcă cu cuvinte cheie mai simple.")
