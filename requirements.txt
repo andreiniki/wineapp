@@ -5,3 +5,4 @@ pandas
 cloudscraper
 googlesearch-python
 duckduckgo_search
+plotly
