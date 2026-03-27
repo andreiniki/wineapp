@@ -23,7 +23,7 @@ HISTORY_FILE = "price_history.json"
 # platform: tip platforma pentru extractia pretului
 
 SITES = [
-    {"store": "King.ro",        "search_url": "https://king.ro/catalogsearch/result/?q={q}",              "result_sel": ".product-item-link, .product-item-name a", "platform": "magento"},
+ {"store": "King.ro", "search_url": "https://king.ro/catalogsearch/result/index/?q={q}",                  "result_sel": ".product-item-link, .product-item-name a", "platform": "magento"},
     {"store": "FineStore",      "search_url": "https://www.finestore.ro/?s={q}&post_type=product",        "result_sel": ".woocommerce-LoopProduct-link, h2.woocommerce-loop-product__title a", "platform": "woo"},
     {"store": "Crush Wine Shop","search_url": "https://www.crushwineshop.ro/?s={q}&post_type=product",    "result_sel": ".woocommerce-LoopProduct-link, h2.woocommerce-loop-product__title a", "platform": "woo"},
     {"store": "VinMagazin",     "search_url": "https://vinmagazin.ro/?s={q}&post_type=product",           "result_sel": ".woocommerce-LoopProduct-link, h2.woocommerce-loop-product__title a", "platform": "woo"},
@@ -137,54 +137,56 @@ def get_price_from_page(soup, platform):
 
 # ── Search & scrape ───────────────────────────────────────────────────────────
 
-def name_score(title, wine_name):
-    """Simple relevance score: how many words from wine_name appear in title."""
-    words = wine_name.lower().split()
-    title_l = title.lower()
-    return sum(1 for w in words if w in title_l)
+def name_score(text, wine_name):
+    stop = {"le", "la", "di", "del", "dell", "de", "the", "a", "an", "0", "75l", "075l"}
+    words = [w for w in wine_name.lower().split() if w not in stop]
+    text_l = text.lower()
+    return sum(1 for w in words if w in text_l)
 
 
 def search_wine_on_site(site, wine_name, scraper_client, debug=False):
-    query = wine_name.replace("'", "").replace("'", "")
+    query = re.sub(r"[''']", "", wine_name)
     url = site["search_url"].replace("{q}", query.replace(" ", "+"))
     try:
         res = scraper_client.get(url, timeout=15)
         if res.status_code != 200:
             return None, None, f"Search HTTP {res.status_code}"
         soup = BeautifulSoup(res.content, "html.parser")
+        domain = url.split("/")[0] + "//" + url.split("/")[2]
 
-        # Find product links in search results
+        # Ia TOATE linkurile si sorteaza dupa relevanta
         links = []
-        for tag in soup.select(site["result_sel"]):
-            href = tag.get("href") or (tag.find_parent("a") or {}).get("href")
-            text = tag.get_text(strip=True)
-            if href and href.startswith("http"):
-                links.append((href, text))
-            elif href:
-                from urllib.parse import urljoin
-                links.append((urljoin(url, href), text))
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("/"):
+                href = domain + href
+            elif not href.startswith("http"):
+                continue
+            # Ignora linkuri de navigatie/categorii
+            if any(x in href for x in ["cart", "wishlist", "login", "account", "category", "catalog/search"]):
+                continue
+            text = a.get_text(strip=True)
+            score = name_score(text + " " + href, wine_name)
+            if score >= 1:
+                links.append((score, href, text))
 
         if not links:
             return None, None, "Niciun rezultat gasit"
 
-        # Pick best matching link
-        links.sort(key=lambda x: name_score(x[1], wine_name), reverse=True)
-        best_url, best_title = links[0]
-
+        links.sort(reverse=True)
+        best_url, best_title = links[0][1], links[0][2]
         if debug:
-            st.caption(f"  Top result: {best_title[:60]} → {best_url}")
+            st.caption(f"  Best: {best_title[:50]} → {best_url}")
 
-        # Fetch product page
         res2 = scraper_client.get(best_url, timeout=15)
         if res2.status_code != 200:
             return None, best_url, f"Product HTTP {res2.status_code}"
         soup2 = BeautifulSoup(res2.content, "html.parser")
         price = get_price_from_page(soup2, site["platform"])
-        if price:
-            return price, best_url, None
-        return None, best_url, "Pret negasit in pagina"
+        return (price, best_url, None) if price else (None, best_url, "Pret negasit in pagina")
     except Exception as e:
         return None, None, str(e)[:60]
+
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
