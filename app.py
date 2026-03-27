@@ -4,112 +4,306 @@ import cloudscraper
 from bs4 import BeautifulSoup
 import time
 import re
+import json
+import os
+from datetime import datetime
 
-st.set_page_config(page_title="Wine Watcher Pro", page_icon="🍷")
+# Optional plotly
+try:
+    import plotly.express as px
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
-def clean_price(text, min_p, max_p):
-    if not text: return None
-    # Curățăm tot ce nu e cifră, punct sau virgulă
-    clean = re.sub(r'[^\d.,]', '', str(text)).replace(',', '.')
-    try:
-        # Rezolvăm problema numerelor cu mai multe puncte (ex: 108.70.00)
-        if clean.count('.') > 1:
-            parts = clean.split('.')
-            clean = f"{parts[0]}.{parts[1]}"
-        
-        val = float(clean)
-        # Dacă prețul e prea mic (ex: 10.87 în loc de 108.7), corectăm
-        if val < 20: val *= 10
-        # Dacă prețul e uriaș (ex: 10870), corectăm
-        if val > 1000: val /= 100
-        
-        # Validăm dacă prețul se încadrează în plaja logică pentru acest vin
-        if min_p <= val <= max_p:
-            return round(val, 2)
-    except:
+st.set_page_config(page_title="Wine Watcher RO", page_icon="🍷", layout="wide")
+
+HISTORY_FILE = "price_history.json"
+WINES_FILE = "wines.json"
+
+# -- Scrapers ------------------------------------------------------------------
+
+def clean_price(text):
+    if not text:
         return None
+    digits = re.sub(r'[^\d.,]', '', str(text)).replace(',', '.')
+    match = re.search(r'(\d+\.\d+|\d+)', digits)
+    if match:
+        val = float(match.group(1))
+        if val > 5000:
+            val /= 100
+        return round(val, 2)
     return None
 
-def get_wine_price(url, min_p, max_p):
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+
+SCRAPERS = {}
+
+def scraper(domain):
+    def decorator(fn):
+        SCRAPERS[domain] = fn
+        return fn
+    return decorator
+
+
+@scraper("vinimondo.ro")
+def scrape_vinimondo(soup, url):
+    tag = soup.find("meta", property="product:price:amount")
+    return clean_price(tag["content"]) if tag else None
+
+
+@scraper("king.ro")
+def scrape_king(soup, url):
+    tag = soup.select_one(".price-final_price .price, .price-wrapper .price")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("crushwineshop.ro")
+def scrape_crush(soup, url):
+    tag = soup.select_one(".woocommerce-Price-amount bdi")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("winemag.ro")
+def scrape_winemag(soup, url):
+    tag = soup.select_one(".price-new, .price")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("vinoteca.ro")
+def scrape_vinoteca(soup, url):
+    tag = soup.select_one(".woocommerce-Price-amount bdi, .price ins .woocommerce-Price-amount bdi")
+    if not tag:
+        tag = soup.select_one(".woocommerce-Price-amount")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("winexpert.ro")
+def scrape_winexpert(soup, url):
+    tag = soup.select_one(".price, .product-price, [class*='price']")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("spiritshop.ro")
+def scrape_spiritshop(soup, url):
+    tag = soup.select_one(".woocommerce-Price-amount bdi, .price")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("wineshop.ro")
+def scrape_wineshop(soup, url):
+    tag = soup.select_one(".price-new, #product-price .price")
+    return clean_price(tag.text) if tag else None
+
+
+@scraper("cramelerecas.ro")
+def scrape_recas(soup, url):
+    tag = soup.select_one(".price, .product-price")
+    return clean_price(tag.text) if tag else None
+
+
+def get_wine_price(url):
+    scraper_client = cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+    )
     try:
-        res = scraper.get(url, timeout=15)
-        if res.status_code != 200: return None
+        res = scraper_client.get(url, timeout=20)
         soup = BeautifulSoup(res.content, "html.parser")
 
-        # Prioritate 1: Selectoare specifice pentru King.ro (pentru a evita prețul greșit)
-        if "king.ro" in url:
-            # Căutăm exact tag-ul de preț final
-            price_tag = soup.select_one('span[data-price-type="finalPrice"] .price') or \
-                        soup.select_one('.product-info-main .price')
-            if price_tag:
-                return clean_price(price_tag.text, min_p, max_p)
+        for domain, fn in SCRAPERS.items():
+            if domain in url:
+                return fn(soup, url)
 
-        # Prioritate 2: Meta Tags (Standarde e-commerce)
-        meta = soup.find("meta", property="product:price:amount") or \
-               soup.find("meta", attrs={"name": "twitter:data1"})
-        if meta:
-            p = clean_price(meta.get("content", ""), min_p, max_p)
-            if p: return p
-
-        # Prioritate 3: Căutare în elemente cu clasa 'price'
-        for tag in soup.find_all(class_=re.compile("price", re.I)):
-            p = clean_price(tag.get_text(), min_p, max_p)
-            if p: return p
-            
+        # Fallback: generic WooCommerce / OpenCart
+        for sel in [
+            ".woocommerce-Price-amount bdi",
+            ".price-new",
+            ".price ins .amount",
+            "[itemprop='price']",
+            ".product-price",
+        ]:
+            tag = soup.select_one(sel)
+            if tag:
+                price = clean_price(tag.get("content") or tag.text)
+                if price:
+                    return price
         return None
-    except:
+    except Exception:
         return None
 
-# --- SURSE REVERIFICATE ---
-VINURI = {
-    "Le Volte dell'Ornellaia": {
-        "min": 100, "max": 180,
-        "surse": [
-            {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ornellaia-le-volte-dellornellaia-075l"},
-            {"Magazin": "King.ro", "URL": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
-            {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
-            {"Magazin": "WineMag", "URL": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
-            {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rosu-sec-le-volte-dell-ornellaia-0-75l"},
-            {"Magazin": "Alcool Scont", "URL": "https://www.alcoolscont.ro/vinuri/vin-rosu-le-volte-dell-ornellaia-0-75l.html"},
-            {"Magazin": "E-Bauturi", "URL": "https://www.e-bauturi.ro/cumpara/vin-rosu-ornellaia-le-volte-dell-ornellaia-0-75l-8447"},
-            {"Magazin": "Nobil Wine", "URL": "https://nobilwine.ro/magazin/vinuri/vinuri-rosii/ornellaia-le-volte-dellornellaia/"}
-        ]
-    },
-    "Rosa dei Frati": {
-        "min": 70, "max": 120,
-        "surse": [
-            {"Magazin": "FineStore", "URL": "https://www.finestore.ro/ca-dei-frati-rosa-dei-frati-075l"},
-            {"Magazin": "King.ro", "URL": "https://king.ro/ca-dei-frati-rosa-dei-frati-0.750-l.html"},
-            {"Magazin": "Vinimondo", "URL": "https://vinimondo.ro/ca-dei-frati-rosa-dei-frati-riviera-del-garda-classico-doc-ca-dei-frati-ro"},
-            {"Magazin": "WineMag", "URL": "https://www.winemag.ro/ca-dei-frati-rosa-dei-frati-0-75l"},
-            {"Magazin": "Drinkz", "URL": "https://drinkz.ro/vin-rose-sec-ca-dei-frati-rosa-dei-frati-0-75l"},
-            {"Magazin": "World of Wines", "URL": "https://worldofwines.ro/ca-dei-frati-rosa-dei-frati-075l"}
-        ]
-    }
-}
 
-st.title("🍷 Scrutin Național: Le Volte & Rosa dei Frati")
-selectie = st.selectbox("Selectează vinul:", list(VINURI.keys()))
+# -- Persistence ---------------------------------------------------------------
 
-if st.button(f"🔍 Verifică Oferte Active"):
-    config = VINURI[selectie]
+def load_wines():
+    if os.path.exists(WINES_FILE):
+        with open(WINES_FILE) as f:
+            return json.load(f)
+    default = [
+        {
+            "name": "Le Volte dell'Ornellaia",
+            "sources": [
+                {"store": "Vinimondo", "url": "https://vinimondo.ro/le-volte-dellornellaia-2023-toscana-igt-ornellaia-ro"},
+                {"store": "King.ro", "url": "https://king.ro/ornellaia-le-volte-dell-ornellaia-0.750-l.html"},
+                {"store": "WineMag", "url": "https://www.winemag.ro/le-volte-dell-ornellaia-2021-0-75l"},
+                {"store": "Crush Wine Shop", "url": "https://www.crushwineshop.ro/le-volte-dell-ornellaia-2023-igp-toscana-rosso-p1435"},
+            ]
+        }
+    ]
+    save_wines(default)
+    return default
+
+
+def save_wines(wines):
+    with open(WINES_FILE, "w") as f:
+        json.dump(wines, f, indent=2, ensure_ascii=False)
+
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2, ensure_ascii=False)
+
+
+def record_prices(wine_name, results):
+    history = load_history()
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if wine_name not in history:
+        history[wine_name] = []
+    for r in results:
+        history[wine_name].append({
+            "date": today,
+            "store": r["Magazin"],
+            "price": r["Pret (RON)"]
+        })
+    save_history(history)
+
+
+# -- UI ------------------------------------------------------------------------
+
+st.title("🍷 Wine Watcher RO")
+st.caption("Urmareste preturile vinurilor pe site-urile romanesti")
+
+wines = load_wines()
+wine_names = [w["name"] for w in wines]
+
+with st.sidebar:
+    st.header("🍾 Vinuri urmarite")
+    selected_wine_name = st.selectbox("Selecteaza vin", wine_names)
+
+    st.divider()
+    st.subheader("Adauga vin nou")
+    with st.form("add_wine"):
+        new_name = st.text_input("Nume vin")
+        new_url = st.text_input("URL produs (primul magazin)")
+        new_store = st.text_input("Nume magazin")
+        submitted = st.form_submit_button("Adauga")
+        if submitted and new_name and new_url and new_store:
+            existing = next((w for w in wines if w["name"].lower() == new_name.lower()), None)
+            if existing:
+                existing["sources"].append({"store": new_store, "url": new_url})
+            else:
+                wines.append({"name": new_name, "sources": [{"store": new_store, "url": new_url}]})
+            save_wines(wines)
+            st.success(f"Adaugat: {new_name}")
+            st.rerun()
+
+    st.divider()
+    st.subheader("Adauga magazin la vin existent")
+    with st.form("add_source"):
+        target_wine = st.selectbox("Vin", wine_names, key="target")
+        extra_store = st.text_input("Magazin")
+        extra_url = st.text_input("URL")
+        sub2 = st.form_submit_button("Adauga magazin")
+        if sub2 and extra_store and extra_url:
+            wine_obj = next(w for w in wines if w["name"] == target_wine)
+            wine_obj["sources"].append({"store": extra_store, "url": extra_url})
+            save_wines(wines)
+            st.success("Magazin adaugat!")
+            st.rerun()
+
+# Main area
+selected_wine = next(w for w in wines if w["name"] == selected_wine_name)
+
+col1, col2 = st.columns([3, 1])
+with col1:
+    st.subheader(f"📍 {selected_wine_name}")
+with col2:
+    fetch = st.button("🔄 Actualizeaza preturile", use_container_width=True)
+
+if fetch:
     results = []
-    bar = st.progress(0)
-    
-    for i, s in enumerate(config["surse"]):
-        with st.spinner(f"Scanăm {s['Magazin']}..."):
-            p = get_wine_price(s["URL"], config["min"], config["max"])
-            if p:
-                results.append({"Magazin": s["Magazin"], "Preț": p, "Link": s["URL"]})
-        bar.progress((i + 1) / len(config["surse"]))
-        time.sleep(1.5)
+    progress = st.progress(0)
+    sources = selected_wine["sources"]
+    for i, s in enumerate(sources):
+        with st.spinner(f"Verificam {s['store']}..."):
+            price = get_wine_price(s["url"])
+            if price:
+                results.append({"Magazin": s["store"], "Pret (RON)": price, "Link": s["url"]})
+            time.sleep(1.5)
+        progress.progress((i + 1) / len(sources))
+    progress.empty()
 
     if results:
-        df = pd.DataFrame(results).sort_values("Preț")
-        st.success(f"Găsit {len(results)} magazine!")
-        st.dataframe(df[["Magazin", "Preț"]], hide_index=True, use_container_width=True)
-        for r in results:
-            st.link_button(f"🛒 {r['Magazin']} - {r['Preț']} RON", r['Link'])
+        record_prices(selected_wine_name, results)
+        st.session_state[f"results_{selected_wine_name}"] = results
+        st.success(f"Preturi actualizate la {datetime.now().strftime('%H:%M, %d %b %Y')}")
     else:
-        st.error("Nicio ofertă validă găsită. Site-urile pot fi protejate.")
+        st.error("Nu am putut prelua preturile. Site-urile pot fi temporar indisponibile.")
+
+# Display current results
+results = st.session_state.get(f"results_{selected_wine_name}", [])
+if results:
+    df = pd.DataFrame(results).sort_values("Pret (RON)")
+    best = df.iloc[0]
+    st.success(f"🏆 Cel mai ieftin: **{best['Magazin']}** - **{best['Pret (RON)']} RON**")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.dataframe(
+            df[["Magazin", "Pret (RON)"]].reset_index(drop=True),
+            use_container_width=True,
+            hide_index=True,
+        )
+    with col_b:
+        if HAS_PLOTLY:
+            fig = px.bar(
+                df, x="Magazin", y="Pret (RON)",
+                color="Pret (RON)", color_continuous_scale="reds_r",
+                title="Comparatie preturi"
+            )
+            fig.update_layout(coloraxis_showscale=False, showlegend=False)
+            st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    st.subheader("🛒 Cumpara direct")
+    cols = st.columns(len(results))
+    for col, r in zip(cols, results):
+        col.link_button(f"{r['Magazin']}\n{r['Pret (RON)']} RON", r["Link"], use_container_width=True)
+
+# Price history
+st.divider()
+st.subheader("📈 Istoric preturi")
+history = load_history()
+wine_hist = history.get(selected_wine_name, [])
+if wine_hist:
+    hist_df = pd.DataFrame(wine_hist)
+    hist_df["date"] = pd.to_datetime(hist_df["date"])
+    if HAS_PLOTLY:
+        fig2 = px.line(
+            hist_df, x="date", y="price", color="store",
+            title=f"Evolutie preturi - {selected_wine_name}",
+            labels={"date": "Data", "price": "Pret (RON)", "store": "Magazin"}
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.dataframe(hist_df, use_container_width=True)
+    if st.button("🗑️ Sterge istoricul pentru acest vin"):
+        history.pop(selected_wine_name, None)
+        save_history(history)
+        st.rerun()
+else:
+    st.info("Niciun istoric disponibil. Apasa 'Actualizeaza preturile' pentru a incepe colectarea.")
