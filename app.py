@@ -268,9 +268,9 @@ def render_wine_card(wine_name: str, items: list) -> None:
         col_tbl, col_stats = st.columns([3, 1])
 
         with col_tbl:
-            df = pd.DataFrame(items)[["shop", "name", "price"]].rename(
-                columns={"shop": "Magazin", "name": "Denumire Produs", "price": "Preț (RON)"}
-            )
+            df = pd.DataFrame(items)[["shop","name","volume","price"]].rename(columns={
+    "shop":"Magazin","name":"Denumire Produs","volume":"Format","price":"Preț (RON)"
+})
 
             def _color_price(v: float) -> str:
                 if v == p_min:
