@@ -1,579 +1,536 @@
 """
-scraper.py — Motor de căutare prețuri vinuri pentru magazine online din România.
-
-Strategii:
-  1. Căutare directă pe fiecare magazin (search endpoint).
-  2. DuckDuckGo pentru descoperire de pagini suplimentare.
-
-Toate prețurile sunt cu TVA inclus (prețurile afișate în România includ TVA).
-Filtrăm strict sticle 0.75L (750 ml / 75 cl).
+Wine Price Watcher România
+Caută și compară prețuri de vinuri din magazine online românești.
+Toate prețurile includ TVA. Doar sticle 0.75L.
 """
 
 from __future__ import annotations
 
-import logging
-import re
+import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
-from typing import Callable, Dict, List, Optional
-from urllib.parse import quote_plus, urljoin
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List
 
-import cloudscraper
-from bs4 import BeautifulSoup
+import pandas as pd
+import streamlit as st
 
-logger = logging.getLogger(__name__)
+from scraper import WineSearchEngine
 
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "DNT": "1",
-    "Cache-Control": "no-cache",
-    "Upgrade-Insecure-Requests": "1",
-}
+st.set_page_config(
+    page_title="Wine Price Watcher România",
+    page_icon="🍷",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-WINE_DOMAINS = [
-    "wineshop.ro", "vinexpert.ro", "king.ro", "vinoteca.ro",
-    "lavinia.ro", "vinmagazin.ro", "crushwineshop.ro", "vinimondo.ro",
-    "winemag.ro", "vinia.ro", "finestore.ro", "winepub.ro",
-    "cramaerasmus.ro", "vinorama.ro", "enoteca.ro", "vinuri.ro",
-    "camara-de-vinuri.ro", "carpatvinum.ro", "smartwines.ro",
-]
+GROUPS_FILE = Path("groups.json")
 
-
-def parse_ron_price(text: str) -> Optional[float]:
-    """
-    Extrage prețul în RON din text.
-    Acceptă formate: '45,99 lei', '45.99 RON', '249 Lei', 'Lei 45,99',
-    '1.250,00 lei', '1 250,99 RON', etc.
-    Returnează float sau None.
-    """
-    if not text:
-        return None
-    text = str(text).strip()
-
-    # Curățăm separatoarele de mii românești DOAR când sunt urmate de virgulă/spațiu/final
-    text_c = re.sub(r"(\d)\.(\d{3})(?=[,\s\D]|$)", r"\1\2", text)
-    text_c = re.sub(r"(\d) (\d{3})(?=[,\s\D]|$)", r"\1\2", text_c)
-
-    patterns = [
-        r"(?<![.\d])(\d{1,6}[.,]\d{2})\s*(?:lei|ron|RON|Lei|LEI)\b",
-        r"(?:lei|ron|RON|Lei|LEI)\s*:?\s*(\d{1,6}[.,]\d{2})(?!\d)",
-        r"(?<![.,\d])(\d{2,5})\s*(?:lei|ron|RON|Lei|LEI)\b",
-        r'"price"\s*:\s*"?(\d+\.?\d{0,2})"?',
-        r'content="(\d+\.?\d{0,2})"',
-    ]
-
-    for pattern in patterns:
-        for src in (text_c, text):
-            m = re.search(pattern, src, re.IGNORECASE)
-            if m:
-                try:
-                    val = float(m.group(1).replace(",", "."))
-                    if 5.0 <= val <= 50_000.0:
-                        return round(val, 2)
-                except (ValueError, TypeError):
-                    continue
-    return None
+st.markdown("""
+<style>
+  .stApp { background-color: #0f0805; color: #f0e6d3; }
+  .stSidebar { background-color: #1a0e0a !important; border-right: 1px solid #5c1f28; }
+  h1, h2, h3, h4 { color: #d4a84b !important; font-family: Georgia, serif !important; }
+  .stButton > button {
+      background: linear-gradient(135deg, #7c1f2e, #5c1520);
+      color: #f5e6c8; border: 1px solid #a0384a;
+      border-radius: 8px; font-weight: 600;
+  }
+  .stButton > button:hover {
+      background: linear-gradient(135deg, #9e2840, #7c1f2e);
+      border-color: #c94b5f; transform: translateY(-1px);
+  }
+  .stButton > button:disabled { background: #2a1a1a; color: #555; border-color: #333; }
+  [data-testid="stMetric"] {
+      background: linear-gradient(135deg, #1f0f0c, #2d1615);
+      border: 1px solid #4a1520; border-radius: 10px; padding: 12px;
+  }
+  [data-testid="stMetricValue"] { color: #d4a84b !important; }
+  [data-testid="stMetricLabel"] { color: #a0785a !important; }
+  .streamlit-expanderHeader {
+      background: linear-gradient(135deg, #1f1010, #2d1a1a) !important;
+      border: 1px solid #5c2030 !important; border-radius: 8px !important;
+  }
+  .stDataFrame { border: 1px solid #4a2030; border-radius: 8px; overflow: hidden; }
+  hr { border-color: #5c1f28 !important; }
+  .stCaption { color: #8a6a4a !important; }
+  .stTextInput input, .stTextArea textarea {
+      background-color: #1f0f0c !important; color: #f5e6c8 !important;
+      border-color: #5c2030 !important;
+  }
+  div[data-testid="stSelectbox"] > div {
+      background-color: #1f0f0c !important; border-color: #5c2030 !important;
+  }
+  .stTabs [data-baseweb="tab"] { color: #a0785a; }
+  .stTabs [data-baseweb="tab"][aria-selected="true"] { color: #d4a84b; border-bottom-color: #d4a84b; }
+  .stInfo { background-color: #0a1a2e !important; border-color: #1a3a5e !important; }
+  .stSuccess { background-color: #0a2e0a !important; border-color: #1a5e1a !important; }
+  .stWarning { background-color: #2e1e0a !important; border-color: #5e3e1a !important; }
+  .stError { background-color: #2e0a0a !important; border-color: #5e1a1a !important; }
+</style>
+""", unsafe_allow_html=True)
 
 
-def is_075_liter(text: str) -> bool:
-    t = str(text).lower()
-
-    excludes = [
-        r"1[.,]5\s*l(?:itri?)?",
-        r"\b1500\s*ml\b",
-        r"\b1\s*500\s*ml\b",
-        r"\bmagnum\b",
-        r"\bjeroboam\b",
-        r"\bdouble\s*magnum\b",
-        r"\b3\s*l(?:itri?)?\b",
-        r"\b3000\s*ml\b",
-        r"\b0[.,]375\s*l",
-        r"\b375\s*ml\b",
-        r"\b0[.,]5\s*l",
-        r"\b500\s*ml\b",
-        r"\b1\s*l(?:itru)?\b(?!\s*(?:itri|itres))",
-        r"\b1000\s*ml\b",
-        r"\b1\s*litru?\b",
-    ]
-    for pat in excludes:
-        if re.search(pat, t):
-            return False
-
-    confirms = [
-        r"0[.,]75\s*l(?:itri?)?",
-        r"\b750\s*ml\b",
-        r"\b75\s*cl\b",
-        r"\b0\.75\b",
-    ]
-    for pat in confirms:
-        if re.search(pat, t):
-            return True
-
-    # Niciun volum menționat → asumăm 0.75L (standard)
-    return True
-
-
-def get_domain(url: str) -> str:
-    m = re.search(r"(?:https?://)?(?:www\.)?([^/?#\s]+)", url)
-    return m.group(1) if m else url
-
-
-def clean_name(name: str) -> str:
-    name = re.sub(r"\s+", " ", name).strip()
-    return name[:120] if len(name) > 120 else name
-
-
-class BaseScraper:
-    SHOP_NAME: str = "Unknown"
-
-    def __init__(self, session: cloudscraper.CloudScraper):
-        self._s = session
-
-    def _fetch(self, url: str, timeout: int = 15) -> Optional[BeautifulSoup]:
+def load_groups() -> Dict[str, List[str]]:
+    if GROUPS_FILE.exists():
         try:
-            resp = self._s.get(url, headers=BROWSER_HEADERS, timeout=timeout)
-            if resp.status_code == 200:
-                return BeautifulSoup(resp.content, "lxml")
-            logger.debug("[%s] HTTP %d: %s", self.SHOP_NAME, resp.status_code, url)
-        except Exception as exc:
-            logger.debug("[%s] Fetch error: %s", self.SHOP_NAME, exc)
-        return None
-
-    def _result(self, name: str, price: float, url: str, ctx: str = "") -> Dict:
-        return {
-            "name": clean_name(name),
-            "price": price,
-            "shop": self.SHOP_NAME,
-            "url": url,
-            "is_075": is_075_liter(name + " " + ctx),
-        }
-
-    def _parse_cards(
-        self,
-        soup: BeautifulSoup,
-        base_url: str,
-        card_sel: str,
-        name_sels: List[str],
-        price_sels: List[str],
-        limit: int = 20,
-    ) -> List[Dict]:
-        results: List[Dict] = []
-        cards = soup.select(card_sel)[:limit]
-
-        for card in cards:
-            ctx = card.get_text(separator=" ", strip=True)
-
-            name = ""
-            for sel in name_sels:
-                el = card.select_one(sel)
-                if el:
-                    name = el.get("title", "") or el.get_text(strip=True)
-                    if len(name) > 3:
-                        break
-            if not name:
-                continue
-
-            price: Optional[float] = None
-            for sel in price_sels:
-                el = card.select_one(sel)
-                if el:
-                    raw = el.get("content", "") or el.get_text(strip=True)
-                    price = parse_ron_price(raw + " lei")
-                    if price:
-                        break
-            if not price:
-                price = parse_ron_price(ctx)
-            if not price:
-                continue
-
-            link = card.select_one("a[href]")
-            prod_url = link["href"] if link and link.get("href") else base_url
-            if prod_url and not prod_url.startswith("http"):
-                prod_url = urljoin(base_url, prod_url)
-
-            results.append(self._result(name, price, prod_url, ctx))
-
-        return results
-
-    def search(self, query: str) -> List[Dict]:
-        raise NotImplementedError
+            data = json.loads(GROUPS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
 
 
-class WineShopScraper(BaseScraper):
-    SHOP_NAME = "wineshop.ro"
-
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://www.wineshop.ro/cautare?q={quote_plus(query + ' 0.75')}"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel=".product-item, .col-product, [class*='product-grid-item'], .grid-item",
-            name_sels=["h2.product-name", "h3.product-name", ".name", ".product-title", "h2", "h3"],
-            price_sels=[".price .value", ".price-box .price", ".price", "[class*='price']"],
+def save_groups(groups: Dict[str, List[str]]) -> None:
+    try:
+        GROUPS_FILE.write_text(
+            json.dumps(groups, ensure_ascii=False, indent=2), encoding="utf-8"
         )
+    except Exception as e:
+        st.error(f"Eroare salvare grupuri: {e}")
 
 
-class KingRoScraper(BaseScraper):
-    SHOP_NAME = "king.ro"
-
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://king.ro/catalogsearch/result/?q={quote_plus(query + ' 0.75')}"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-
-        results: List[Dict] = []
-        for card in soup.select("li.item.product, .product-item")[:20]:
-            ctx = card.get_text(separator=" ", strip=True)
-            name_el = card.select_one(".product-item-name, .product-name")
-            if not name_el:
-                continue
-            name = name_el.get_text(strip=True)
-            price_el = card.select_one("span[data-price-type='finalPrice'] .price")
-            price = parse_ron_price(price_el.get_text() if price_el else "") or parse_ron_price(ctx)
-            if not price:
-                continue
-            link_el = card.select_one("a.product-item-link, .product-item-name a")
-            prod_url = link_el["href"] if link_el and link_el.get("href") else url
-            results.append(self._result(name, price, prod_url, ctx))
-        return results
+def init_state() -> None:
+    if "groups" not in st.session_state:
+        st.session_state.groups = load_groups()
+    if "results" not in st.session_state:
+        st.session_state.results: Dict[str, list] = {}
+    if "engine" not in st.session_state:
+        st.session_state.engine = None
+    if "pending_wines" not in st.session_state:
+        st.session_state.pending_wines: List[str] = []
+    if "editing_group" not in st.session_state:
+        st.session_state.editing_group = None
 
 
-class VinexpertScraper(BaseScraper):
-    SHOP_NAME = "vinexpert.ro"
+def get_engine() -> WineSearchEngine:
+    if st.session_state.engine is None:
+        st.session_state.engine = WineSearchEngine()
+    return st.session_state.engine
 
-    def search(self, query: str) -> List[Dict]:
-        for url_tmpl in [
-            f"https://vinexpert.ro/search?q={quote_plus(query)}",
-            f"https://vinexpert.ro/cautare?q={quote_plus(query)}",
-            f"https://vinexpert.ro/?s={quote_plus(query)}&post_type=product",
-        ]:
-            soup = self._fetch(url_tmpl)
-            if not soup:
-                continue
-            results = self._parse_cards(
-                soup, url_tmpl,
-                card_sel=".product-item, .product-card, li.product, [class*='product-item']",
-                name_sels=[".product-name", ".product-title", "h2", "h3", "[class*='name']"],
-                price_sels=[".price", "[class*='price']", "span.amount", ".woocommerce-Price-amount"],
+
+def results_to_df(results: Dict[str, list]) -> pd.DataFrame:
+    rows = []
+    for wine, items in results.items():
+        for r in items:
+            rows.append({
+                "Vin": wine,
+                "Magazin": r["shop"],
+                "Denumire Produs": r.get("name", wine),
+                "Preț (RON, TVA inc.)": r["price"],
+                "Link": r["url"],
+            })
+    if not rows:
+        return pd.DataFrame(
+            columns=["Vin", "Magazin", "Denumire Produs", "Preț (RON, TVA inc.)", "Link"]
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["Vin", "Preț (RON, TVA inc.)"])
+        .reset_index(drop=True)
+    )
+
+
+def render_sidebar() -> None:
+    groups = st.session_state.groups
+
+    with st.sidebar:
+        st.markdown("<h2 style='text-align:center;font-size:2rem;'>🍷</h2>", unsafe_allow_html=True)
+        st.title("Grupuri de Vinuri")
+
+        with st.expander("➕ Grup Nou", expanded=len(groups) == 0):
+            g_name = st.text_input("Nume grup:", placeholder="ex: Barolo Preferate", key="new_g_name")
+            g_wines = st.text_area(
+                "Vinuri (unul per linie):",
+                placeholder="Barolo Borgogno\nChianti Classico\nAmarone\nBrunello di Montalcino",
+                height=130,
+                key="new_g_wines",
             )
-            if results:
-                return results
-        return []
+            if st.button("✅ Creează Grup", use_container_width=True, key="btn_create_group"):
+                name = (g_name or "").strip()
+                wines = [w.strip() for w in (g_wines or "").splitlines() if w.strip()]
+                if not name:
+                    st.error("Introdu un nume pentru grup.")
+                elif not wines:
+                    st.error("Adaugă cel puțin un vin.")
+                else:
+                    if name in groups:
+                        groups[name] = list(dict.fromkeys(groups[name] + wines))
+                        st.success(f"Adăugate {len(wines)} vinuri în '{name}'.")
+                    else:
+                        groups[name] = wines
+                        st.success(f"Grup '{name}' creat cu {len(wines)} vinuri!")
+                    save_groups(groups)
+                    time.sleep(0.6)
+                    st.rerun()
 
+        st.divider()
 
-class VinotecaScraper(BaseScraper):
-    SHOP_NAME = "vinoteca.ro"
+        if groups:
+            st.subheader(f"Grupuri ({len(groups)})")
+            for gname, gwines in list(groups.items()):
+                with st.expander(f"📦 {gname}  ·  {len(gwines)} vinuri"):
+                    if st.session_state.editing_group == gname:
+                        new_text = st.text_area(
+                            "Editează vinuri:",
+                            value="\n".join(gwines),
+                            height=120,
+                            key=f"edit_ta_{gname}",
+                        )
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            if st.button("💾 Salvează", key=f"save_{gname}", use_container_width=True):
+                                groups[gname] = [w.strip() for w in new_text.splitlines() if w.strip()]
+                                save_groups(groups)
+                                st.session_state.editing_group = None
+                                st.rerun()
+                        with c2:
+                            if st.button("✖ Anulează", key=f"cancel_{gname}", use_container_width=True):
+                                st.session_state.editing_group = None
+                                st.rerun()
+                    else:
+                        for w in gwines:
+                            st.markdown(f"&nbsp;&nbsp;• {w}")
+                        ca, cb, cc = st.columns(3)
+                        with ca:
+                            if st.button("🔍", key=f"srch_{gname}", help="Caută grupul"):
+                                st.session_state.pending_wines = list(gwines)
+                                st.rerun()
+                        with cb:
+                            if st.button("✏️", key=f"edit_{gname}", help="Editează"):
+                                st.session_state.editing_group = gname
+                                st.rerun()
+                        with cc:
+                            if st.button("🗑", key=f"del_{gname}", help="Șterge grupul"):
+                                del groups[gname]
+                                save_groups(groups)
+                                st.rerun()
+        else:
+            st.info("Niciun grup încă.\nCreează primul grup de vinuri!")
 
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://www.vinoteca.ro/search?q={quote_plus(query)}&type=product"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel=".grid__item, .product-card, [class*='product'], .card-wrapper",
-            name_sels=[".product-card__title", ".card__heading", ".full-unstyled-link", "h3", "h2"],
-            price_sels=[
-                ".price__sale .price-item--sale",
-                ".price-item--regular",
-                ".price-item",
-                ".price",
-            ],
+        st.divider()
+        st.caption(
+            "ℹ️ Surse: 12+ magazine România\n"
+            "💶 Prețuri cu TVA inclus (19%)\n"
+            "🍾 Doar sticle 0.75L"
         )
 
 
-class LaviniaRoScraper(BaseScraper):
-    SHOP_NAME = "lavinia.ro"
+def run_search(wines: List[str]) -> None:
+    engine = get_engine()
+    results: Dict[str, list] = {}
 
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://www.lavinia.ro/search?q={quote_plus(query)}"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel=".product-miniature, .product-card, [class*='product'], article.product-miniature",
-            name_sels=[".product-name", ".product-title", "h2", "h3"],
-            price_sels=[".product-price", ".price", "[class*='price']"],
-        )
+    st.subheader(f"🔍 Caut {len(wines)} {'vin' if len(wines) == 1 else 'vinuri'}…")
+    overall = st.progress(0.0, text="Progres general")
+    wine_label = st.empty()
+    shop_bar = st.progress(0.0)
+    shop_label = st.empty()
 
+    for i, wine in enumerate(wines):
+        wine_label.markdown(f"**Vin {i+1}/{len(wines)}:** _{wine}_")
+        shop_bar.progress(0.0)
 
-class WooCommerceScraper(BaseScraper):
-    def __init__(self, session: cloudscraper.CloudScraper, base_url: str, shop_name: str):
-        super().__init__(session)
-        self.SHOP_NAME = shop_name
-        self._base = base_url.rstrip("/")
+        def shop_cb(done: int, total: int) -> None:
+            shop_bar.progress(done / max(total, 1))
+            shop_label.text(f"  Magazine verificate: {done}/{total}")
 
-    def search(self, query: str) -> List[Dict]:
-        url = f"{self._base}/?s={quote_plus(query)}&post_type=product"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-
-        results: List[Dict] = []
-        for card in soup.select("li.product, .woocommerce-loop-product, .product")[:20]:
-            ctx = card.get_text(separator=" ", strip=True)
-            name_el = card.select_one(
-                "h2.woocommerce-loop-product__title, "
-                ".woocommerce-loop-product__title, "
-                "h3.product-title, h2, h3"
-            )
-            if not name_el:
-                continue
-            name = name_el.get_text(strip=True)
-            price_el = (
-                card.select_one("ins span.woocommerce-Price-amount bdi")
-                or card.select_one("ins .woocommerce-Price-amount")
-                or card.select_one("span.woocommerce-Price-amount bdi")
-                or card.select_one("span.woocommerce-Price-amount")
-                or card.select_one(".price")
-            )
-            price = parse_ron_price(price_el.get_text() if price_el else "") or parse_ron_price(ctx)
-            if not price:
-                continue
-            link_el = card.select_one("a[href]")
-            prod_url = link_el["href"] if link_el and link_el.get("href") else url
-            if prod_url and not prod_url.startswith("http"):
-                prod_url = urljoin(url, prod_url)
-            results.append(self._result(name, price, prod_url, ctx))
-        return results
-
-
-class VinimondoScraper(BaseScraper):
-    SHOP_NAME = "vinimondo.ro"
-
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://vinimondo.ro/?s={quote_plus(query)}&post_type=product"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel="li.product, .product, .woocommerce-loop-product",
-            name_sels=[".woocommerce-loop-product__title", "h2", "h3"],
-            price_sels=["ins span.woocommerce-Price-amount", "span.woocommerce-Price-amount", ".price"],
-        )
-
-
-class WineMagScraper(BaseScraper):
-    SHOP_NAME = "winemag.ro"
-
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://www.winemag.ro/?s={quote_plus(query)}&post_type=product"
-        soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel="li.product, .product, .woocommerce-loop-product",
-            name_sels=[".woocommerce-loop-product__title", "h2", "h3"],
-            price_sels=["ins .woocommerce-Price-amount", ".woocommerce-Price-amount", ".price"],
-        )
-
-
-class CrushWineShopScraper(BaseScraper):
-    SHOP_NAME = "crushwineshop.ro"
-
-    def search(self, query: str) -> List[Dict]:
-        url = f"https://www.crushwineshop.ro/search?q={quote_plus(query)}"
-        soup = self._fetch(url)
-        if not soup:
-            url = f"https://www.crushwineshop.ro/?s={quote_plus(query)}&post_type=product"
-            soup = self._fetch(url)
-        if not soup:
-            return []
-        return self._parse_cards(
-            soup, url,
-            card_sel="li.product, .product, .woocommerce-loop-product, [class*='product-item']",
-            name_sels=[".woocommerce-loop-product__title", "h2", "h3", ".product-name"],
-            price_sels=["ins .woocommerce-Price-amount", "p.price ins span", "span.woocommerce-Price-amount", ".price"],
-        )
-
-
-class DDGScraper(BaseScraper):
-    SHOP_NAME = "DDG-Discovery"
-
-    def search(self, query: str) -> List[Dict]:
-        DDGS = None
-        for mod in ("ddgs", "duckduckgo_search"):
-            try:
-                DDGS = __import__(mod, fromlist=["DDGS"]).DDGS
-                break
-            except ImportError:
-                continue
-        if DDGS is None:
-            return []
-
-        results: List[Dict] = []
         try:
-            search_query = f"{query} 0.75L pret lei cumpara vin site:ro"
-            with DDGS() as ddgs:
-                hits = ddgs.text(search_query, max_results=15, region="ro-ro") or []
-
-            wine_hits = [
-                h for h in hits
-                if any(d in h.get("href", "") for d in WINE_DOMAINS)
-            ]
-
-            for hit in wine_hits[:6]:
-                url = hit.get("href", "")
-                if not url or not url.startswith("http"):
-                    continue
-
-                soup = self._fetch(url, timeout=10)
-                if not soup:
-                    continue
-
-                for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
-                    tag.decompose()
-
-                h1 = soup.select_one("h1")
-                name = h1.get_text(strip=True) if h1 else query
-
-                price: Optional[float] = None
-
-                for sel in ['meta[property="product:price:amount"]', 'meta[itemprop="price"]']:
-                    el = soup.select_one(sel)
-                    if el:
-                        price = parse_ron_price((el.get("content", "") or "") + " lei")
-                        if price:
-                            break
-
-                if not price:
-                    for sel in [
-                        "span[data-price-type='finalPrice'] .price",
-                        ".price-box .price",
-                        "ins span.woocommerce-Price-amount bdi",
-                        "ins .woocommerce-Price-amount",
-                        "span.woocommerce-Price-amount bdi",
-                        "span.woocommerce-Price-amount",
-                        ".current-price",
-                        ".price-new",
-                    ]:
-                        el = soup.select_one(sel)
-                        if el:
-                            price = parse_ron_price(el.get_text())
-                            if price:
-                                break
-
-                if not price:
-                    price = parse_ron_price(soup.get_text(separator=" "))
-
-                if price:
-                    ctx = soup.get_text(separator=" ")[:3000]
-                    results.append({
-                        "name": clean_name(name),
-                        "price": price,
-                        "shop": get_domain(url),
-                        "url": url,
-                        "is_075": is_075_liter(name + " " + ctx),
-                    })
-
-                time.sleep(0.3)
-
+            results[wine] = engine.search_wine(wine, progress_cb=shop_cb)
         except Exception as exc:
-            logger.warning("DDGScraper error: %s", exc)
+            st.warning(f"⚠️ Eroare la '{wine}': {str(exc)[:100]}")
+            results[wine] = []
 
-        return results
+        overall.progress((i + 1) / len(wines), text=f"Progres: {i+1}/{len(wines)} vinuri")
+
+    overall.empty()
+    wine_label.empty()
+    shop_bar.empty()
+    shop_label.empty()
+
+    n_found = sum(1 for v in results.values() if v)
+    n_prices = sum(len(v) for v in results.values())
+    st.success(f"✅ Gata! {n_found}/{len(wines)} vinuri găsite, {n_prices} prețuri total.")
+    st.session_state.results = results
 
 
-class WineSearchEngine:
-    """
-    Motor central care coordonează toți scraperii.
-    Returnează DOAR sticle de 0.75L, prețuri cu TVA inclus, sortate după preț.
-    """
+def render_wine_card(wine_name: str, items: list) -> None:
+    if not items:
+        st.warning(f"🍾 **{wine_name}** — Niciun rezultat 0.75L găsit.")
+        return
 
-    _WOOCOMMERCE_SHOPS = [
-        ("https://vinmagazin.ro", "vinmagazin.ro"),
-        ("https://www.vinia.ro", "vinia.ro"),
-        ("https://www.finestore.ro", "finestore.ro"),
-        ("https://winepub.ro", "winepub.ro"),
-    ]
+    prices = [r["price"] for r in items]
+    p_min, p_max = min(prices), max(prices)
 
-    MAX_WORKERS = 5
-    SCRAPER_TIMEOUT = 30
+    header = (
+        f"🍷 **{wine_name}**  ·  "
+        f"{len(items)} {'magazin' if len(items) == 1 else 'magazine'}  ·  "
+        f"**{p_min:.2f}** – {p_max:.2f} RON"
+    )
 
-    def __init__(self):
-        self._session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "desktop": True, "mobile": False}
+    with st.expander(header, expanded=True):
+        col_tbl, col_stats = st.columns([3, 1])
+
+        with col_tbl:
+            df = pd.DataFrame(items)[["shop", "name", "price"]].rename(
+                columns={"shop": "Magazin", "name": "Denumire Produs", "price": "Preț (RON)"}
+            )
+
+            def _color_price(v: float) -> str:
+                if v == p_min:
+                    return "color: #4caf50; font-weight: bold"
+                if v == p_max:
+                    return "color: #e57373"
+                return ""
+
+            styled = (
+                df.style
+                .applymap(_color_price, subset=["Preț (RON)"])
+                .format({"Preț (RON)": "{:.2f} RON"})
+                .hide(axis="index")
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        with col_stats:
+            st.metric("🏆 Cel mai mic", f"{p_min:.2f} RON")
+            st.metric("📊 Medie", f"{sum(prices)/len(prices):.2f} RON")
+            st.metric("📈 Diferență", f"{p_max - p_min:.2f} RON")
+
+        st.write("**Cumpără direct:**")
+        cols = st.columns(min(4, len(items)))
+        for j, r in enumerate(items):
+            badge = "🏆 " if r["price"] == p_min else ""
+            with cols[j % min(4, len(items))]:
+                st.link_button(
+                    f"{badge}{r['shop']}\n{r['price']:.2f} RON",
+                    r["url"],
+                    use_container_width=True,
+                )
+
+
+def tab_search() -> None:
+    st.subheader("Caută Vinuri")
+    col_l, col_r = st.columns([3, 2])
+
+    with col_l:
+        st.write("**Vinuri individuale** (unul per linie):")
+        individual = st.text_area(
+            label="vinuri individuale",
+            label_visibility="collapsed",
+            height=160,
+            placeholder="Barolo Borgogno 2019\nChianti Classico Riserva\nAmarone della Valpolicella",
+            key="ta_individual",
         )
-        self._scrapers = self._build_scrapers()
 
-    def _build_scrapers(self) -> List[BaseScraper]:
-        s = self._session
-        scrapers: List[BaseScraper] = [
-            WineShopScraper(s),
-            KingRoScraper(s),
-            VinexpertScraper(s),
-            VinotecaScraper(s),
-            LaviniaRoScraper(s),
-            VinimondoScraper(s),
-            WineMagScraper(s),
-            CrushWineShopScraper(s),
-        ]
-        for base_url, name in self._WOOCOMMERCE_SHOPS:
-            scrapers.append(WooCommerceScraper(s, base_url, name))
-        scrapers.append(DDGScraper(s))
-        return scrapers
+    with col_r:
+        st.write("**Sau caută un grup salvat:**")
+        groups = st.session_state.groups
+        group_opts = ["— Niciun grup —"] + list(groups.keys())
+        chosen = st.selectbox(label="grup", label_visibility="collapsed", options=group_opts, key="sel_group")
+        if chosen != "— Niciun grup —":
+            gwines = groups[chosen]
+            preview = "\n".join(f"• {w}" for w in gwines[:6])
+            extra = f"\n… și încă {len(gwines)-6}" if len(gwines) > 6 else ""
+            st.info(f"**{len(gwines)} vinuri** în '{chosen}':\n{preview}{extra}")
 
-    def search_wine(
-        self,
-        query: str,
-        progress_cb: Optional[Callable[[int, int], None]] = None,
-    ) -> List[Dict]:
-        all_raw: List[Dict] = []
-        total = len(self._scrapers)
-        completed = 0
+    wines_list: List[str] = []
 
-        def run(scraper: BaseScraper) -> List[Dict]:
-            try:
-                return scraper.search(query)
-            except Exception as exc:
-                logger.warning("[%s] search error: %s", scraper.SHOP_NAME, exc)
-                return []
+    if st.session_state.pending_wines:
+        wines_list = st.session_state.pending_wines
+        st.session_state.pending_wines = []
 
-        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as ex:
-            future_map = {ex.submit(run, sc): sc for sc in self._scrapers}
-            for fut in as_completed(future_map):
-                try:
-                    all_raw.extend(fut.result(timeout=self.SCRAPER_TIMEOUT))
-                except (FuturesTimeout, Exception) as exc:
-                    logger.debug("Future error: %s", exc)
-                finally:
-                    completed += 1
-                    if progress_cb:
-                        try:
-                            progress_cb(completed, total)
-                        except Exception:
-                            pass
+    if chosen != "— Niciun grup —":
+        for w in groups.get(chosen, []):
+            if w not in wines_list:
+                wines_list.append(w)
 
-        filtered = [r for r in all_raw if r.get("is_075", True)]
+    if individual:
+        for w in individual.splitlines():
+            w = w.strip()
+            if w and w not in wines_list:
+                wines_list.append(w)
 
-        best: Dict[str, Dict] = {}
-        for r in filtered:
-            domain = r["shop"]
-            if domain not in best or r["price"] < best[domain]["price"]:
-                best[domain] = r
+    cb1, cb2, cb3 = st.columns([3, 1.5, 1.5])
+    with cb1:
+        label_btn = f"🔍 Caută Prețuri ({len(wines_list)} vinuri)" if wines_list else "🔍 Caută Prețuri"
+        search_clicked = st.button(label_btn, type="primary", disabled=not wines_list,
+                                   use_container_width=True, key="btn_search_main")
+    with cb2:
+        clear_clicked = st.button("🗑 Șterge Rezultate", disabled=not st.session_state.results,
+                                  use_container_width=True, key="btn_clear")
+    with cb3:
+        if st.session_state.results:
+            total_p = sum(len(v) for v in st.session_state.results.values())
+            st.caption(f"✅ {total_p} prețuri în memorie")
 
-        return sorted(best.values(), key=lambda x: x["price"])
+    if clear_clicked:
+        st.session_state.results = {}
+        st.rerun()
 
-    def search_multiple(
-        self,
-        queries: List[str],
-        progress_cb: Optional[Callable[[int, int], None]] = None,
-    ) -> Dict[str, List[Dict]]:
-        results: Dict[str, List[Dict]] = {}
-        for q in queries:
-            results[q] = self.search_wine(q, progress_cb)
-            time.sleep(0.5)
-        return results
+    if search_clicked and wines_list:
+        st.divider()
+        run_search(wines_list)
+        st.rerun()
+
+    if st.session_state.results:
+        st.divider()
+        results = st.session_state.results
+        found = sum(1 for v in results.values() if v)
+        total = len(results)
+        total_p = sum(len(v) for v in results.values())
+
+        mc1, mc2, mc3, mc4 = st.columns(4)
+        mc1.metric("Vinuri căutate", total)
+        mc2.metric("Vinuri găsite", found)
+        mc3.metric("Prețuri găsite", total_p)
+        mc4.metric("Negăsite", total - found)
+
+        st.divider()
+        for wine_name, items in results.items():
+            render_wine_card(wine_name, items)
+
+
+def tab_table() -> None:
+    results = st.session_state.results
+    if not results:
+        st.info("Nicio căutare efectuată. Mergi la **Caută Vinuri** pentru a începe.")
+        return
+
+    df = results_to_df(results)
+    if df.empty:
+        st.warning("Niciun rezultat disponibil.")
+        return
+
+    st.subheader("Tabel Complet de Prețuri")
+    st.caption(f"Toate sticlele sunt **0.75L** | Prețuri **cu TVA inclus** (19%) | **{len(df)}** rezultate")
+
+    with st.expander("🔧 Filtre & Sortare", expanded=True):
+        f1, f2, f3 = st.columns(3)
+        with f1:
+            sel_wines = st.multiselect("Filtrează vinuri:", options=df["Vin"].unique().tolist(),
+                                       default=df["Vin"].unique().tolist(), key="f_wines")
+        with f2:
+            sel_shops = st.multiselect("Filtrează magazine:", options=df["Magazin"].unique().tolist(),
+                                       default=df["Magazin"].unique().tolist(), key="f_shops")
+        with f3:
+            p_min = float(df["Preț (RON, TVA inc.)"].min())
+            p_max = float(df["Preț (RON, TVA inc.)"].max())
+            if p_min < p_max:
+                price_range = st.slider("Interval preț (RON):", min_value=p_min, max_value=p_max,
+                                        value=(p_min, p_max), step=0.5, key="f_price")
+            else:
+                price_range = (p_min, p_max)
+                st.caption(f"Preț fix: {p_min:.2f} RON")
+
+        s1, s2 = st.columns(2)
+        with s1:
+            sort_col = st.selectbox("Sortează după:", ["Preț (RON, TVA inc.)", "Vin", "Magazin"], key="f_sort_col")
+        with s2:
+            sort_asc = st.radio("Ordine:", ["Crescător ↑", "Descrescător ↓"], horizontal=True, key="f_sort_dir")
+
+    mask = (
+        df["Vin"].isin(sel_wines)
+        & df["Magazin"].isin(sel_shops)
+        & df["Preț (RON, TVA inc.)"].between(price_range[0], price_range[1])
+    )
+    filtered = df[mask].sort_values(sort_col, ascending=(sort_asc == "Crescător ↑")).reset_index(drop=True)
+
+    min_per_wine = filtered.groupby("Vin")["Preț (RON, TVA inc.)"].transform("min")
+
+    def _row_style(row: pd.Series):
+        if row["Preț (RON, TVA inc.)"] == min_per_wine[row.name]:
+            return ["background-color: #0a2e0a"] * len(row)
+        return [""] * len(row)
+
+    display = filtered[["Vin", "Magazin", "Denumire Produs", "Preț (RON, TVA inc.)"]].copy()
+    styled = (
+        display.style
+        .apply(_row_style, axis=1)
+        .format({"Preț (RON, TVA inc.)": "{:.2f} RON"})
+        .hide(axis="index")
+    )
+
+    st.dataframe(styled, use_container_width=True,
+                 height=min(600, max(300, len(filtered) * 36 + 60)), hide_index=True)
+    st.caption(f"Afișând **{len(filtered)}/{len(df)}** rezultate  |  **Verde** = cel mai mic preț per vin")
+
+
+def tab_export() -> None:
+    results = st.session_state.results
+    if not results:
+        st.info("Nicio căutare efectuată încă.")
+        return
+
+    df = results_to_df(results)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    st.subheader("Export Date")
+    ec1, ec2, ec3 = st.columns(3)
+
+    with ec1:
+        st.write("**CSV (compatibil Excel)**")
+        csv = df.to_csv(index=False, encoding="utf-8-sig", sep=";", decimal=",")
+        st.download_button("⬇️ Descarcă .csv", data=csv,
+                           file_name=f"wine_prices_{ts}.csv", mime="text/csv", use_container_width=True)
+
+    with ec2:
+        st.write("**JSON**")
+        json_str = json.dumps(results, ensure_ascii=False, indent=2, default=str)
+        st.download_button("⬇️ Descarcă .json", data=json_str,
+                           file_name=f"wine_prices_{ts}.json", mime="application/json", use_container_width=True)
+
+    with ec3:
+        st.write("**Grupuri salvate**")
+        grp_str = json.dumps(st.session_state.groups, ensure_ascii=False, indent=2)
+        st.download_button("⬇️ Descarcă grupuri.json", data=grp_str,
+                           file_name="wine_groups.json", mime="application/json", use_container_width=True)
+
+    st.divider()
+
+    if not df.empty:
+        st.subheader("Statistici per Vin")
+        stats = (
+            df.groupby("Vin")["Preț (RON, TVA inc.)"]
+            .agg(["min", "max", "mean", "count"])
+            .reset_index()
+        )
+        stats.columns = ["Vin", "Preț Min (RON)", "Preț Max (RON)", "Preț Mediu (RON)", "Nr. Magazine"]
+        stats = stats.round(2)
+        st.dataframe(
+            stats.style
+            .format({"Preț Min (RON)": "{:.2f}", "Preț Max (RON)": "{:.2f}", "Preț Mediu (RON)": "{:.2f}"})
+            .background_gradient(subset=["Preț Min (RON)"], cmap="RdYlGn_r")
+            .hide(axis="index"),
+            use_container_width=True, hide_index=True,
+        )
+
+    st.divider()
+    st.subheader("Previzualizare Completă")
+    st.dataframe(
+        df.style.format({"Preț (RON, TVA inc.)": "{:.2f} RON"}).hide(axis="index"),
+        use_container_width=True, hide_index=True,
+    )
+
+
+def main() -> None:
+    init_state()
+    render_sidebar()
+
+    st.title("🍷 Wine Price Watcher România")
+    st.caption(
+        "Caută și compară prețuri de vinuri din magazine online românești  |  "
+        "Toate prețurile **includ TVA**  |  Doar sticle **0.75L**"
+    )
+
+    tab1, tab2, tab3 = st.tabs(["🔍 Caută Vinuri", "📊 Tabel Detaliat", "📋 Export & Statistici"])
+
+    with tab1:
+        tab_search()
+    with tab2:
+        tab_table()
+    with tab3:
+        tab_export()
+
+
+if __name__ == "__main__":
+    main()
