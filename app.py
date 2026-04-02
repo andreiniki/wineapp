@@ -252,7 +252,7 @@ def run_search(wines: List[str]) -> None:
 
 def render_wine_card(wine_name: str, items: list) -> None:
     if not items:
-        st.warning(f"🍾 **{wine_name}** — Niciun rezultat 0.75L găsit.")
+        st.warning(f"🍾 **{wine_name}** — Niciun rezultat găsit. Încearcă o denumire mai completă.")
         return
 
     prices = [r["price"] for r in items]
