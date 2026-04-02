@@ -118,18 +118,14 @@ def results_to_df(results: Dict[str, list]) -> pd.DataFrame:
                 "Vin": wine,
                 "Magazin": r["shop"],
                 "Denumire Produs": r.get("name", wine),
+                "Format": r.get("volume", "—"),
                 "Preț (RON, TVA inc.)": r["price"],
                 "Link": r["url"],
             })
     if not rows:
-        return pd.DataFrame(
-            columns=["Vin", "Magazin", "Denumire Produs", "Preț (RON, TVA inc.)", "Link"]
-        )
-    return (
-        pd.DataFrame(rows)
-        .sort_values(["Vin", "Preț (RON, TVA inc.)"])
-        .reset_index(drop=True)
-    )
+        return pd.DataFrame(columns=["Vin","Magazin","Denumire Produs","Format","Preț (RON, TVA inc.)","Link"])
+    return pd.DataFrame(rows).sort_values(["Vin","Preț (RON, TVA inc.)"]).reset_index(drop=True)
+
 
 
 def render_sidebar() -> None:
