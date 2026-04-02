@@ -401,90 +401,107 @@ class CrushWineShopScraper(BaseScraper):
 
 
 class DDGScraper(BaseScraper):
+    """Caută pe DuckDuckGo HTML direct, fără librărie externă."""
     SHOP_NAME = "DDG-Discovery"
 
     def search(self, query: str) -> List[Dict]:
-        DDGS = None
-        for mod in ("ddgs", "duckduckgo_search"):
-            try:
-                DDGS = __import__(mod, fromlist=["DDGS"]).DDGS
-                break
-            except ImportError:
-                continue
-        if DDGS is None:
-            return []
-
         results: List[Dict] = []
         try:
-            search_query = f"{query} 0.75L pret lei cumpara vin site:ro"
-            with DDGS() as ddgs:
-                hits = ddgs.text(search_query, max_results=15, region="ro-ro") or []
+            from urllib.parse import unquote, parse_qs, urlparse as _urlparse
 
-            wine_hits = [
-                h for h in hits
-                if any(d in h.get("href", "") for d in WINE_DOMAINS)
-            ]
+            search_q = f"{query} 0.75 pret lei"
+            ddg_url = f"https://html.duckduckgo.com/html/?q={quote_plus(search_q)}"
+            resp = self._s.get(
+                ddg_url,
+                headers={**BROWSER_HEADERS, "Referer": "https://duckduckgo.com/"},
+                timeout=15,
+            )
+            if resp.status_code != 200:
+                return []
 
-            for hit in wine_hits[:6]:
-                url = hit.get("href", "")
-                if not url or not url.startswith("http"):
+            soup = BeautifulSoup(resp.content, "lxml")
+
+            for result in soup.select(".result")[:15]:
+                link_el = result.select_one(".result__a")
+                snippet_el = result.select_one(".result__snippet")
+                if not link_el:
                     continue
 
-                soup = self._fetch(url, timeout=10)
-                if not soup:
+                href = link_el.get("href", "")
+                # DuckDuckGo wraps URLs: /l/?uddg=<encoded_url>
+                if "uddg=" in href:
+                    try:
+                        params = parse_qs(_urlparse(href).query)
+                        href = unquote(params.get("uddg", [""])[0])
+                    except Exception:
+                        continue
+
+                if not href.startswith("http"):
+                    continue
+                if not any(d in href for d in WINE_DOMAINS):
                     continue
 
-                for tag in soup(["script", "style", "noscript", "header", "footer", "nav", "aside"]):
+                snippet = snippet_el.get_text() if snippet_el else ""
+                snippet_price = parse_ron_price(snippet + " lei")
+
+                soup_prod = self._fetch(href, timeout=12)
+                if not soup_prod:
+                    # folosim prețul din snippet dacă există
+                    if snippet_price:
+                        name = link_el.get_text(strip=True)
+                        results.append({
+                            "name": clean_name(name),
+                            "price": snippet_price,
+                            "shop": get_domain(href),
+                            "url": href,
+                            "is_075": is_075_liter(name + " " + snippet),
+                        })
+                    continue
+
+                for tag in soup_prod(["script", "style", "noscript", "header", "footer", "nav"]):
                     tag.decompose()
 
-                h1 = soup.select_one("h1")
-                name = h1.get_text(strip=True) if h1 else query
+                h1 = soup_prod.select_one("h1")
+                name = h1.get_text(strip=True) if h1 else link_el.get_text(strip=True)
 
                 price: Optional[float] = None
-
-                for sel in ['meta[property="product:price:amount"]', 'meta[itemprop="price"]']:
-                    el = soup.select_one(sel)
+                for sel in [
+                    'meta[property="product:price:amount"]',
+                    'meta[itemprop="price"]',
+                    "span[data-price-type='finalPrice'] .price",
+                    ".price-box .price",
+                    "ins span.woocommerce-Price-amount bdi",
+                    "ins .woocommerce-Price-amount",
+                    "span.woocommerce-Price-amount bdi",
+                    "span.woocommerce-Price-amount",
+                    ".current-price", ".price-new", ".price",
+                ]:
+                    el = soup_prod.select_one(sel)
                     if el:
-                        price = parse_ron_price((el.get("content", "") or "") + " lei")
+                        price = parse_ron_price((el.get("content", "") or el.get_text()) + " lei")
                         if price:
                             break
 
                 if not price:
-                    for sel in [
-                        "span[data-price-type='finalPrice'] .price",
-                        ".price-box .price",
-                        "ins span.woocommerce-Price-amount bdi",
-                        "ins .woocommerce-Price-amount",
-                        "span.woocommerce-Price-amount bdi",
-                        "span.woocommerce-Price-amount",
-                        ".current-price",
-                        ".price-new",
-                    ]:
-                        el = soup.select_one(sel)
-                        if el:
-                            price = parse_ron_price(el.get_text())
-                            if price:
-                                break
-
-                if not price:
-                    price = parse_ron_price(soup.get_text(separator=" "))
+                    price = parse_ron_price(soup_prod.get_text(separator=" ")) or snippet_price
 
                 if price:
-                    ctx = soup.get_text(separator=" ")[:3000]
+                    ctx = soup_prod.get_text(separator=" ")[:2000]
                     results.append({
                         "name": clean_name(name),
                         "price": price,
-                        "shop": get_domain(url),
-                        "url": url,
+                        "shop": get_domain(href),
+                        "url": href,
                         "is_075": is_075_liter(name + " " + ctx),
                     })
 
-                time.sleep(0.3)
+                time.sleep(0.4)
 
         except Exception as exc:
             logger.warning("DDGScraper error: %s", exc)
 
         return results
+
 
 
 class WineSearchEngine:
