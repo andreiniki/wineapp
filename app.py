@@ -513,10 +513,8 @@ def main() -> None:
     render_sidebar()
 
     st.title("🍷 Wine Price Watcher România")
-    st.caption(
-        "Caută și compară prețuri de vinuri din magazine online românești  |  "
-        "Toate prețurile **includ TVA**  |  Doar sticle **0.75L**"
-    )
+    st.caption("Caută prețuri de vinuri din magazine online românești | Prețuri cu TVA inclus (21%)")
+
 
     tab1, tab2, tab3 = st.tabs(["🔍 Caută Vinuri", "📊 Tabel Detaliat", "📋 Export & Statistici"])
 
