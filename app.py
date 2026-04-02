@@ -438,7 +438,7 @@ def tab_table() -> None:
             return ["background-color: #0a2e0a"] * len(row)
         return [""] * len(row)
 
-    display = filtered[["Vin", "Magazin", "Denumire Produs", "Preț (RON, TVA inc.)"]].copy()
+    display = filtered[["Vin","Magazin","Format","Denumire Produs","Preț (RON, TVA inc.)"]].copy()
     styled = (
         display.style
         .apply(_row_style, axis=1)
