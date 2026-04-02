@@ -212,7 +212,7 @@ def render_sidebar() -> None:
         st.divider()
         st.caption(
             "ℹ️ Surse: 12+ magazine România\n"
-            "💶 Prețuri cu TVA inclus (19%)\n"
+            "💶 Prețuri cu TVA inclus (21%)\n"
             "🍾 Doar sticle 0.75L"
         )
 
@@ -402,7 +402,7 @@ def tab_table() -> None:
         return
 
     st.subheader("Tabel Complet de Prețuri")
-    st.caption(f"Toate sticlele sunt **0.75L** | Prețuri **cu TVA inclus** (19%) | **{len(df)}** rezultate")
+    st.caption(f"Toate sticlele sunt **0.75L** | Prețuri **cu TVA inclus** (21%) | **{len(df)}** rezultate")
 
     with st.expander("🔧 Filtre & Sortare", expanded=True):
         f1, f2, f3 = st.columns(3)
