@@ -136,7 +136,7 @@ class BaseScraper:
     def __init__(self, session: cloudscraper.CloudScraper):
         self._s = session
 
-    def _fetch(self, url: str, timeout: int = 15) -> Optional[BeautifulSoup]:
+    def _fetch(self, url: str, timeout: int = 10) -> Optional[BeautifulSoup]:
         try:
             resp = self._s.get(url, headers=BROWSER_HEADERS, timeout=timeout)
             if resp.status_code == 200:
@@ -500,8 +500,8 @@ class WineSearchEngine:
         ("https://winepub.ro", "winepub.ro"),
     ]
 
-    MAX_WORKERS = 5
-    SCRAPER_TIMEOUT = 30
+    MAX_WORKERS = 3
+    SCRAPER_TIMEOUT = 20
 
     def __init__(self):
         self._session = cloudscraper.create_scraper(
